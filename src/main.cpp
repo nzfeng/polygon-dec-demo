@@ -25,6 +25,28 @@ std::unique_ptr<VertexPositionGeometry> geometry;
 // == Polyscope data
 polyscope::SurfaceMesh* psMesh;
 
+/* Solve Poisson problems using both sets of polygon operators. */
+void solvePoissonProblems() {
+    // TODO
+
+    if (mesh->isTriangular()) {
+        // TODO: Solve using standard cotan operator.
+    }
+}
+
+/* Check that gradient, divergence, Laplacian can be assembled as expected from DEC operators. */
+void testDECOperators() {
+    // TODO
+}
+
+/* Implement the scalar heat method -- a great way to test the gradient, divergence, and Laplacian. */
+void solveGeodesicDistance() {
+    // TODO
+}
+
+/* Test that the lumped mass matrices correspond with their unlumped versions. */
+void testMassLumping() {}
+
 void myCallback() {}
 
 int main(int argc, char** argv) {
@@ -45,7 +67,6 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-
     polyscope::init();
 
     polyscope::state::userCallback = myCallback;
@@ -53,7 +74,10 @@ int main(int argc, char** argv) {
     // Load mesh
     if (meshFilename) {
         std::string MESH_FILEPATH = args::get(meshFilename);
-        std::string MESHROOT = polyscope::guessNiceNameFromPath(MESH_FILEPATH);
+        std::string MESHNAME = polyscope::guessNiceNameFromPath(MESH_FILEPATH);
+        std::tie(mesh, geometry) = readSurfaceMesh(MESH_FILEPATH);
+        psMesh = polyscope::registerSurfaceMesh(MESHNAME, geometry->vertexPositions, mesh->getFaceVertexList());
+        psMesh->setAllPermutations(polyscopePermutations(*mesh));
     }
 
     polyscope::show();
