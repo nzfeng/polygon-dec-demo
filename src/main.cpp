@@ -42,15 +42,15 @@ void solvePoissonProblems() {
         rho[vIdx] += weight;
     }
 
-    geometry->requireVirtualRefinementLaplacian();
-    geometry->requireVirtualRefinementVertexLumpedMassMatrix();
-    geometry->requireVirtualElementLaplacian();
-    geometry->requireVirtualElementVertexLumpedMassMatrix();
+    geometry->requireSimplePolygonLaplacian();
+    geometry->requireSimplePolygonVertexLumpedMassMatrix();
+    geometry->requirePolygonLaplacian();
+    geometry->requirePolygontVertexLumpedMassMatrix();
 
-    SparseMatrix<double> L_VR = geometry->virtualRefinementLaplacian;
-    SparseMatrix<double> L_VEM = geometry->virtualElementLaplacian;
-    SparseMatrix<double> M_VR = geometry->virtualRefinementVertexLumpedMassMatrix;
-    SparseMatrix<doulbe> M_VEM = geometry->virtualElementVertexLumpedMassMatrix;
+    SparseMatrix<double> L_VR = geometry->simplePolygonLaplacian;
+    SparseMatrix<double> L_VEM = geometry->polygonLaplacian;
+    SparseMatrix<double> M_VR = geometry->simplePolygonVertexLumpedMassMatrix;
+    SparseMatrix<doulbe> M_VEM = geometry->polygonVertexLumpedMassMatrix;
     double totalRho_VR = (M_VR * rho).sum();
     double totalRho_VEM = (M_VEM * rho).sum();
     double totalArea_VR = 0.;
@@ -87,48 +87,48 @@ void solvePoissonProblems() {
         geometry->unrequireFaceAreas();
     }
 
-    geometry->unrequireVirtualRefinementLaplacian();
-    geometry->unrequireVirtualRefinementVertexLumpedMassMatrix();
-    geometry->unrequireVirtualElementLaplacian();
-    geometry->unrequireVirtualElementVertexLumpedMassMatrix();
+    geometry->unrequireSimplePolygonLaplacian();
+    geometry->unrequireSimplePolygonVertexLumpedMassMatrix();
+    geometry->unrequirePolygonLaplacian();
+    geometry->unrequirePolygonVertexLumpedMassMatrix();
     std::cerr << "\tDone testing." << std::endl;
 }
 
 /* Check that gradient, divergence, Laplacian can be assembled as expected from DEC operators. */
 void testDECOperators() {
     std::cerr << "testDECOperators()..." << std::endl;
-    geometry->requireVirtualRefinementDECOperators();
-    geometry->requireVirtualRefinementLaplacian();
-    geometry->requireVirtualElementDECOperators();
-    geometry->requireVirtualElementLaplacian();
+    geometry->requireSimplePolygonDECOperators();
+    geometry->requireSimplePolygonLaplacian();
+    geometry->requirePolygonDECOperators();
+    geometry->requirePolygonLaplacian();
 
     // TODO
     double epsilon = 1e-8;
-    SparseMatrix<double>& L_VR = geometry->virtualRefinementLaplacian;
-    SparseMatrix<double>& L_VEM = geometry->virtualElementLaplacian;
-    SparseMatrix<double>& h0_VR = geometry->virtualRefinementHodge0;
-    SparseMatrix<double>& h0_VEM = geometry->virtualElementHodge0;
-    SparseMatrix<double>& h0Inv_VR = geometry->virtualRefinementHodge0Inverse;
-    SparseMatrix<double>& h0Inv_VEM = geometry->virtualElementHodge0Inverse;
-    SparseMatrix<double>& h1_VR = geometry->virtualRefinementHodge1;
-    SparseMatrix<double>& h1_VEM = geometry->virtualElementHodge1;
-    SparseMatrix<double>& h1Inv_VR = geometry->virtualRefinementHodge1Inverse;
-    SparseMatrix<double>& h1Inv_VEM = geometry->virtualElementHodge1Inverse;
-    SparseMatrix<double>& h2_VR = geometry->virtualRefinementHodge2;
-    SparseMatrix<double>& h2_VEM = geometry->virtualElementHodge2;
-    SparseMatrix<double>& h2Inv_VR = geometry->virtualRefinementHodge2Inverse;
-    SparseMatrix<double>& h2Inv_VEM = geometry->virtualElementHodge2Inverse;
-    SparseMatrix<double>& d0_VR = geometry->virtualRefinementD0;
-    SparseMatrix<double>& d0_VEM = geometry->virtualElementD0;
-    SparseMatrix<double>& d1_VR = geometry->virtualRefinementD1;
-    SparseMatrix<double>& d1_VEM = geometry->virtualElementD1;
+    SparseMatrix<double>& L_VR = geometry->simplePolygonLaplacian;
+    SparseMatrix<double>& L_VEM = geometry->polygonLaplacian;
+    SparseMatrix<double>& h0_VR = geometry->simplePolygonHodge0;
+    SparseMatrix<double>& h0_VEM = geometry->polygonHodge0;
+    SparseMatrix<double>& h0Inv_VR = geometry->simplePolygonHodge0Inverse;
+    SparseMatrix<double>& h0Inv_VEM = geometry->polygonHodge0Inverse;
+    SparseMatrix<double>& h1_VR = geometry->simplePolygonHodge1;
+    SparseMatrix<double>& h1_VEM = geometry->polygonHodge1;
+    SparseMatrix<double>& h1Inv_VR = geometry->simplePolygonHodge1Inverse;
+    SparseMatrix<double>& h1Inv_VEM = geometry->polygonHodge1Inverse;
+    SparseMatrix<double>& h2_VR = geometry->simplePolygonHodge2;
+    SparseMatrix<double>& h2_VEM = geometry->polygonHodge2;
+    SparseMatrix<double>& h2Inv_VR = geometry->simplePolygonHodge2Inverse;
+    SparseMatrix<double>& h2Inv_VEM = geometry->polygonHodge2Inverse;
+    SparseMatrix<double>& d0_VR = geometry->simplePolygonD0;
+    SparseMatrix<double>& d0_VEM = geometry->polygonD0;
+    SparseMatrix<double>& d1_VR = geometry->simplePolygonD1;
+    SparseMatrix<double>& d1_VEM = geometry->polygonD1;
     assert((L_VR - d0_VR.transpose() * h1_VR * d0_VR).norm() < epsilon);
     assert((L_VEM - d0_VEM.transpose() * h1_VEM * d0_VEM).norm() < epsilon);
 
-    geometry->unrequireVirtualRefinementDECOperators();
-    geometry->unrequireVirtualRefinementLaplacian();
-    geometry->unrequireVirtualElementDECOperators();
-    geometry->unrequireVirtualElementLaplacian();
+    geometry->unrequireSimplePolygonDECOperators();
+    geometry->unrequireSimplePolygonLaplacian();
+    geometry->unrequirePolygonDECOperators();
+    geometry->unrequirePolygonLaplacian();
     std::cerr << "\tDone testing." << std::endl;
 }
 
@@ -160,16 +160,16 @@ void solveGeodesicDistance() {
 /* Test that the lumped mass matrices correspond with their unlumped versions. */
 void testMassLumping() {
     std::cerr << "testMassLumping()..." << std::endl;
-    geometry->requireVirtualRefinementVertexLumpedMassMatrix();
-    geometry->requireVirtualRefinementVertexGalerkinMassMatrix();
-    geometry->requireVirtualElementVertexLumpedMassMatrix();
-    geometry->requireVirtualElementVertexGalerkinMassMatrix();
+    geometry->requireSimplePolygonVertexLumpedMassMatrix();
+    geometry->requireSimplePolygonVertexGalerkinMassMatrix();
+    geometry->requirePolygonVertexLumpedMassMatrix();
+    geometry->requirePolygonVertexGalerkinMassMatrix();
 
     double epsilon = 1e-8;
-    SparseMatrix<double> M_VR_T = geometry->virtualRefinementVertexGalerkinMassMatrix.transpose();
-    SparseMatrix<double> M_VEM_T = geometry->virtualElementVertexGalerkinMassMatrix.transpose();
-    SparseMatrix<double> M_VR = geometry->virtualRefinementVertexLumpedMassMatrix;
-    SparseMatrix<double> M_VEM = geometry->virtualElementVertexLumpedMassMatrix;
+    SparseMatrix<double> M_VR_T = geometry->simplePolygonVertexGalerkinMassMatrix.transpose();
+    SparseMatrix<double> M_VEM_T = geometry->polygonVertexGalerkinMassMatrix.transpose();
+    SparseMatrix<double> M_VR = geometry->simplePolygonVertexLumpedMassMatrix;
+    SparseMatrix<double> M_VEM = geometry->polygonVertexLumpedMassMatrix;
     for (size_t i = 0; i < mesh->nVertices(); i++) {
         double rowSumVR = 0.;
         double rowSumVEM = 0.;
@@ -183,10 +183,10 @@ void testMassLumping() {
         assert(std::abs(rowSumVEM - M_VEM.coeffRef(i, i)) < epsilon);
     }
 
-    geometry->unrequireVirtualRefinementVertexLumpedMassMatrix();
-    geometry->unrequireVirtualRefinementVertexGalerkinMassMatrix();
-    geometry->unrequireVirtualElementVertexLumpedMassMatrix();
-    geometry->unrequireVirtualElementVertexGalerkinMassMatrix();
+    geometry->unrequireSimplePolygonVertexLumpedMassMatrix();
+    geometry->unrequireSimplePolygonVertexGalerkinMassMatrix();
+    geometry->unrequirePolygonVertexLumpedMassMatrix();
+    geometry->unrequirePolygonVertexGalerkinMassMatrix();
     std::cerr << "\tDone testing." << std::endl;
 }
 
