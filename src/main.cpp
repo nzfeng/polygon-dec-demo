@@ -2,6 +2,7 @@
 #include "geometrycentral/surface/manifold_surface_mesh.h"
 #include "geometrycentral/surface/meshio.h"
 #include "geometrycentral/surface/surface_mesh_factories.h"
+#include "geometrycentral/surface/vector_heat_method.h"
 #include "geometrycentral/surface/vertex_position_geometry.h"
 #include "geometrycentral/utilities/utilities.h"
 
@@ -42,10 +43,26 @@ void solvePoissonProblems() {
     }
 
     geometry->requireVirtualRefinementLaplacian();
+    geometry->requireVirtualRefinementVertexLumpedMassMatrix();
     geometry->requireVirtualElementLaplacian();
+    geometry->requireVirtualElementVertexLumpedMassMatrix();
 
-    // TODO
-    Vector<double> VRSoln, VEMSoln;
+    SparseMatrix<double> L_VR = geometry->virtualRefinementLaplacian;
+    SparseMatrix<double> L_VEM = geometry->virtualElementLaplacian;
+    SparseMatrix<double> M_VR = geometry->virtualRefinementVertexLumpedMassMatrix;
+    SparseMatrix<doulbe> M_VEM = geometry->virtualElementVertexLumpedMassMatrix;
+    double totalRho_VR = (M_VR * rho).sum();
+    double totalRho_VEM = (M_VEM * rho).sum();
+    double totalArea_VR = 0.;
+    double totalArea_VEM = 0.;
+    Vector<double> rhoBar_VR = Vector<double>::Ones(V) * (totalRho_VR / totalArea_VR);
+    Vector<double> rhs_VR = M_VR * (rhoBar_VR - rho_VR);
+    Vector<double> rhoBar_VEM = Vector<double>::Ones(V) * (totalRho_VEM / totalArea_VEM);
+    Vector<double> rhs_VEM = M_VEM * (rhoBar_VEM - rho_VEM);
+    Vector<double> VRSoln = solvePositiveDefinite(L_VR, rhs_VR);
+    Vector<double> VEMSoln = solvePositiveDefinite(L_VEM, rhs_VEM);
+    std::cerr << "|VRSoln - VEMSoln| / |VRSoln|: " << (VRSoln - VEMSoln).norm() / VRSoln.norm() << std::endl;
+    std::cerr << "|VRSoln - VEMSoln| / |VEMSoln|: " << (VRSoln - VEMSoln).norm() / VEMSoln.norm() << std::endl;
 
     if (mesh->isTriangular()) {
         // Solve using standard cotan operator.
@@ -69,6 +86,11 @@ void solvePoissonProblems() {
         geometry->unrequireVertexLumpedMassMatrix();
         geometry->unrequireFaceAreas();
     }
+
+    geometry->unrequireVirtualRefinementLaplacian();
+    geometry->unrequireVirtualRefinementVertexLumpedMassMatrix();
+    geometry->unrequireVirtualElementLaplacian();
+    geometry->unrequireVirtualElementVertexLumpedMassMatrix();
     std::cerr << "\tDone testing." << std::endl;
 }
 
@@ -166,6 +188,30 @@ void testMassLumping() {
     geometry->unrequireVirtualElementVertexLumpedMassMatrix();
     geometry->unrequireVirtualElementVertexGalerkinMassMatrix();
     std::cerr << "\tDone testing." << std::endl;
+}
+
+void solveVectorHeatMethod() {
+
+    // Randomly choose some vertex sources with random magnitudes.
+    size_t V = mesh->nVertices();
+    int nSources = randomInt(1, 5);
+    std::vector<std::tuple<Vertex, double>> sourceMagnitudes(nSources);
+    std::vector<std::tuple<Vertex, Vector2>> sourceVectors(nSources);
+    for (int i = 0; i < nSources; i++) {
+        points[i] = randomReal(1., 5.);
+        Vector2 vec = {randomReal(-1., 1.), randomReal(-1., 1.)};
+        sourceVectors[i] = vec / vec.norm();
+    }
+
+    // TODO
+
+    if (mesh->isTriangular()) {
+        // Solve using standard operators.
+        VectorHeatMethodSolver triSolver(*geometry);
+        VertexData<double> triScalarExtension = triSolver.extendScalar(sourceMagnitudes);
+        VertexData<Vector2> = triSolver.transportTangentVectors(sourceVectors);
+        // TODO
+    }
 }
 
 void myCallback() {}
