@@ -232,6 +232,29 @@ void timing() {
     std::chrono::time_point<high_resolution_clock> t1, t2;
     std::chrono::milliseconds ms_int;
 
+    std::cerr << "\n";
+    t1 = high_resolution_clock::now();
+    geometry->requireCotanLaplacian();
+    t2 = high_resolution_clock::now();
+    ms_int = duration_cast<milliseconds>(t2 - t1);
+    std::cerr << "\trequireCotanLaplacian(): " << ms_int.count() << "ms" << std::endl;
+
+    std::cerr << "\n";
+    t1 = high_resolution_clock::now();
+    geometry->requireVertexLumpedMassMatrix();
+    t2 = high_resolution_clock::now();
+    ms_int = duration_cast<milliseconds>(t2 - t1);
+    std::cerr << "\trequireVertexLumpedMassMatrix(): " << ms_int.count() << "ms" << std::endl;
+
+    std::cerr << "\n";
+    t1 = high_resolution_clock::now();
+    geometry->requireDECOperators();
+    t2 = high_resolution_clock::now();
+    ms_int = duration_cast<milliseconds>(t2 - t1);
+    std::cerr << "\trequireDECOperators(): " << ms_int.count() << "ms" << std::endl;
+
+    std::cerr << "\n";
+
     t1 = high_resolution_clock::now();
     geometry->requireSimplePolygonLaplacian();
     t2 = high_resolution_clock::now();
@@ -249,6 +272,8 @@ void timing() {
     t2 = high_resolution_clock::now();
     ms_int = duration_cast<milliseconds>(t2 - t1);
     std::cerr << "\trequireSimplePolygonVertexGalerkinMassMatrix(): " << ms_int.count() << "ms" << std::endl;
+
+    std::cerr << "\n";
 
     t1 = high_resolution_clock::now();
     geometry->requirePolygonLaplacian();
