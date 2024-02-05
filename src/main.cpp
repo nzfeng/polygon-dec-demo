@@ -6,6 +6,7 @@
 #include "geometrycentral/surface/vertex_position_geometry.h"
 #include "geometrycentral/utilities/utilities.h"
 
+#include "polyscope/point_cloud.h"
 #include "polyscope/polyscope.h"
 #include "polyscope/surface_mesh.h"
 
@@ -27,204 +28,10 @@ std::unique_ptr<VertexPositionGeometry> geometry;
 
 // == Polyscope data
 polyscope::SurfaceMesh* psMesh;
-VertexData<Vector3> VBASISX, VBASISY;
+std::vector<Vector3> VBASISX, VBASISY;
 
 // == other data
 double MAX_DIAGONAL_LENGTH = 0.;
-
-
-/* Solve Poisson problems using both sets of polygon operators. */
-void solvePoissonProblems() {
-    std::cerr << "solvePoissonProblems()..." << std::endl;
-    // Randomly choose some vertex sources.
-    size_t V = mesh->nVertices();
-    int nSources = randomInt(1, 5);
-    Vector<double> rho = Vector<double>::Zero(V);
-    for (int i = 0; i < nSources; i++) {
-        size_t vIdx = randomIndex(V);
-        double weight = randomInt(1, 5);
-        weight *= (unitRand() < 0.5) ? 1. : -1.;
-        rho[vIdx] += weight;
-    }
-
-    geometry->requireSimplePolygonLaplacian();
-    geometry->requireSimplePolygonVertexLumpedMassMatrix();
-    geometry->requireSimplePolygonVertexGalerkinMassMatrix();
-    geometry->requirePolygonLaplacian();
-    geometry->requirePolygonVertexLumpedMassMatrix();
-
-    SparseMatrix<double> L_VR = geometry->simplePolygonLaplacian;
-    SparseMatrix<double> L_VEM = geometry->polygonLaplacian;
-    SparseMatrix<double> M_VR = geometry->simplePolygonVertexLumpedMassMatrix;
-    SparseMatrix<double> M_VRL = geometry->simplePolygonVertexGalerkinMassMatrix;
-    SparseMatrix<double> M_VEM = geometry->polygonVertexLumpedMassMatrix;
-    double totalRho_VR = (M_VR * rho).sum();
-    double totalRho_VRL = (M_VRL * rho).sum();
-    double totalRho_VEM = (M_VEM * rho).sum();
-    double totalArea_VR = 0.;
-    double totalArea_VEM = 0.;
-    Vector<double> rhoBar_VR = Vector<double>::Ones(V) * (totalRho_VR / totalArea_VR);
-    Vector<double> rhs_VR = M_VR * (rhoBar_VR - rho);
-    Vector<double> rhoBar_VRL = Vector<double>::Ones(V) * (totalRho_VRL / totalArea_VR);
-    Vector<double> rhs_VRL = M_VRL * (rhoBar_VRL - rho);
-    Vector<double> rhoBar_VEM = Vector<double>::Ones(V) * (totalRho_VEM / totalArea_VEM);
-    Vector<double> rhs_VEM = M_VEM * (rhoBar_VEM - rho);
-    Vector<double> VRSoln = solvePositiveDefinite(L_VR, rhs_VR);
-    Vector<double> VRLSoln = solvePositiveDefinite(L_VR, rhs_VRL);
-    Vector<double> VEMSoln = solvePositiveDefinite(L_VEM, rhs_VEM);
-    std::cerr << "|VRSoln - VRLSoln| / |VRSoln|: " << (VRSoln - VRLSoln).norm() / VRSoln.norm() << std::endl;
-    std::cerr << "|VRSoln - VRLSoln| / |VRLSoln|: " << (VRSoln - VRLSoln).norm() / VRLSoln.norm() << std::endl;
-    std::cerr << "|VRSoln - VEMSoln| / |VRSoln|: " << (VRSoln - VEMSoln).norm() / VRSoln.norm() << std::endl;
-    std::cerr << "|VRSoln - VEMSoln| / |VEMSoln|: " << (VRSoln - VEMSoln).norm() / VEMSoln.norm() << std::endl;
-
-    if (mesh->isTriangular()) {
-        // Solve using standard cotan operator.
-        geometry->requireVertexLumpedMassMatrix();
-        geometry->requireCotanLaplacian();
-        geometry->requireFaceAreas();
-
-        SparseMatrix<double> C = geometry->cotanLaplacian;
-        SparseMatrix<double> M = geometry->vertexLumpedMassMatrix;
-        double totalArea = 0.;
-        for (Face f : mesh->faces()) totalArea += geometry->faceAreas[f];
-        double totalRho = (M * rho).sum();
-        Vector<double> rhoBar = Vector<double>::Ones(V) * (totalRho / totalArea);
-        Vector<double> rhs = M * (rhoBar - rho);
-        Vector<double> triSoln = solvePositiveDefinite(C, rhs);
-        psMesh->addVertexSignedDistanceQuantity("tri", triSoln);
-        std::cerr << "[poisson] |VR - truth|: " << (triSoln - VRSoln).norm() << std::endl;
-        std::cerr << "[poisson] |VR (lumped) - truth|: " << (triSoln - VRLSoln).norm() << std::endl;
-        std::cerr << "[poisson] |VEM - truth|: " << (triSoln - VEMSoln).norm() << std::endl;
-
-        geometry->unrequireCotanLaplacian();
-        geometry->unrequireVertexLumpedMassMatrix();
-        geometry->unrequireFaceAreas();
-    }
-
-    geometry->unrequireSimplePolygonLaplacian();
-    geometry->unrequireSimplePolygonVertexLumpedMassMatrix();
-    geometry->unrequirePolygonLaplacian();
-    geometry->unrequirePolygonVertexLumpedMassMatrix();
-    std::cerr << "\tDone testing." << std::endl;
-}
-
-/* Check that gradient, divergence, Laplacian can be assembled as expected from DEC operators. */
-void testDECOperators() {
-    std::cerr << "testDECOperators()..." << std::endl;
-    geometry->requirePolygonDECOperators();
-    geometry->requirePolygonLaplacian();
-
-    double epsilon = 1e-8;
-    SparseMatrix<double>& L = geometry->polygonLaplacian;
-    SparseMatrix<double>& h0 = geometry->polygonHodge0;
-    SparseMatrix<double>& h0Inv = geometry->polygonHodge0Inverse;
-    SparseMatrix<double>& h1 = geometry->polygonHodge1;
-    SparseMatrix<double>& h2 = geometry->polygonHodge2;
-    SparseMatrix<double>& h2Inv = geometry->polygonHodge2Inverse;
-    SparseMatrix<double>& d0 = geometry->polygonD0;
-    SparseMatrix<double>& d1 = geometry->polygonD1;
-    std::cerr << (L - d0.transpose() * h1 * d0).norm() << std::endl;
-    std::cerr << (L + d0.transpose() * h1 * d0).norm() << std::endl;
-    assert((L - d0.transpose() * h1 * d0).norm() < epsilon);
-
-    // TODO: Check gradient & divergence with sharp and flat operators
-
-    geometry->unrequirePolygonDECOperators();
-    geometry->unrequirePolygonLaplacian();
-    std::cerr << "\tDone testing." << std::endl;
-}
-
-/* Implement the scalar heat method -- good way to test the gradient, divergence, and Laplacian. */
-void solveGeodesicDistance() {
-    std::cerr << "solveGeodesicDistance()..." << std::endl;
-    // Randomly choose some vertex sources.
-    size_t V = mesh->nVertices();
-    size_t F = mesh->nFaces();
-    Vector<double> rho = Vector<double>::Zero(V);
-    const int nSources = randomInt(1, 5);
-    std::vector<Vertex> sources(nSources);
-    for (int i = 0; i < nSources; i++) {
-        size_t idx = randomIndex(V);
-        sources[i] = mesh->vertex(idx);
-        rho[idx] += 1.;
-    }
-
-    geometry->requireVertexIndices();
-    geometry->requirePolygonVertexLumpedMassMatrix();
-    geometry->requirePolygonLaplacian();
-    geometry->requirePolygonGradientMatrix();
-    geometry->requirePolygonDivergenceMatrix();
-    geometry->requirePolygonDECOperators();
-
-    // Flow vector heat.
-    SparseMatrix<double> M = geometry->polygonVertexLumpedMassMatrix;
-    SparseMatrix<double> L = geometry->polygonLaplacian;
-    double shortTime = MAX_DIAGONAL_LENGTH * MAX_DIAGONAL_LENGTH;
-    SparseMatrix<double> LHS = M + shortTime * L;
-    Vector<double> X = solvePositiveDefinite(LHS, rho);
-
-    // Normalize gradient.
-    Vector<double> Y = geometry->polygonGradientMatrix * X; // 3|F|
-    for (size_t i = 0; i < F; i++) {
-        Vector3 g = {Y[3 * i], Y[3 * i + 1], Y[3 * i + 2]};
-        g /= g.norm();
-        Y[3 * i] = g[0];
-        Y[3 * i + 1] = g[1];
-        Y[3 * i + 2] = g[2];
-    }
-
-    // Integrate.
-    Vector<double> div = geometry->polygonDivergenceMatrix * Y;
-    Vector<double> VEMDistances = solvePositiveDefinite(L, div);
-
-    // Shift solution.
-    double avgVEM = 0.;
-    for (const Vertex& v : sources) {
-        size_t vIdx = geometry->vertexIndices[v];
-        avgVEM += VEMDistances[vIdx];
-    }
-    avgVEM /= nSources;
-    VEMDistances -= avgVEM * Vector<double>::Ones(V);
-
-    geometry->unrequireVertexIndices();
-    geometry->unrequirePolygonLaplacian();
-    geometry->unrequirePolygonGradientMatrix();
-    geometry->unrequirePolygonDivergenceMatrix();
-    geometry->unrequirePolygonVertexLumpedMassMatrix();
-    geometry->unrequirePolygonDECOperators();
-
-    if (mesh->isTriangular()) {
-        // Solve using standard operators.
-        HeatMethodDistanceSolver triSolver(*geometry);
-        VertexData<double> triDistances = triSolver.computeDistance(sources);
-        psMesh->addVertexSignedDistanceQuantity("tri", triDistances);
-        std::cerr << "[distance] |VEM - truth|: " << (triDistances.toVector() - VEMDistances).norm() << std::endl;
-    }
-    std::cerr << "\tDone testing." << std::endl;
-}
-
-/* Test that the lumped mass matrices correspond with their unlumped versions. */
-void testMassLumping() {
-    std::cerr << "testMassLumping()..." << std::endl;
-
-    geometry->requireSimplePolygonVertexLumpedMassMatrix();
-    geometry->requireSimplePolygonVertexGalerkinMassMatrix();
-
-    double epsilon = 1e-8;
-    SparseMatrix<double> M_T = geometry->simplePolygonVertexGalerkinMassMatrix.transpose();
-    SparseMatrix<double> M = geometry->simplePolygonVertexLumpedMassMatrix;
-    for (size_t i = 0; i < mesh->nVertices(); i++) {
-        double rowSum = 0.;
-        for (SparseMatrix<double>::InnerIterator it(M_T, i); it; ++it) {
-            rowSum += it.value();
-        }
-        assert(std::abs(rowSum - M.coeffRef(i, i)) < epsilon);
-    }
-
-    geometry->unrequireSimplePolygonVertexLumpedMassMatrix();
-    geometry->unrequireSimplePolygonVertexGalerkinMassMatrix();
-    std::cerr << "\tDone testing." << std::endl;
-}
 
 void timing() {
 
@@ -314,6 +121,305 @@ void timing() {
     std::cerr << "\tDone testing." << std::endl;
 }
 
+/* Test that the lumped mass matrices correspond with their unlumped versions. */
+void testMassLumping() {
+    std::cerr << "testMassLumping()..." << std::endl;
+
+    geometry->requireSimplePolygonVertexLumpedMassMatrix();
+    geometry->requireSimplePolygonVertexGalerkinMassMatrix();
+
+    double epsilon = 1e-8;
+    SparseMatrix<double> M_T = geometry->simplePolygonVertexGalerkinMassMatrix.transpose();
+    SparseMatrix<double> M = geometry->simplePolygonVertexLumpedMassMatrix;
+    for (size_t i = 0; i < mesh->nVertices(); i++) {
+        double rowSum = 0.;
+        for (SparseMatrix<double>::InnerIterator it(M_T, i); it; ++it) {
+            rowSum += it.value();
+        }
+        assert(std::abs(rowSum - M.coeffRef(i, i)) < epsilon);
+    }
+
+    geometry->unrequireSimplePolygonVertexLumpedMassMatrix();
+    geometry->unrequireSimplePolygonVertexGalerkinMassMatrix();
+    std::cerr << "\tDone testing." << std::endl;
+}
+
+/* Check that polygon Laplacians and mass matrices coincide with simplicial versions on a triangle mesh. */
+void testOnTriangleMeshes() {
+
+    geometry->requireVertexGalerkinMassMatrix();
+    geometry->requireVertexLumpedMassMatrix();
+    geometry->requireCotanLaplacian();
+    geometry->requireSimplePolygonLaplacian();
+    geometry->requireSimplePolygonVertexLumpedMassMatrix();
+    geometry->requireSimplePolygonVertexGalerkinMassMatrix();
+    geometry->requirePolygonLaplacian();
+    geometry->requirePolygonVertexLumpedMassMatrix();
+
+    SparseMatrix<double>& L = geometry->cotanLaplacian;
+    SparseMatrix<double>& L_VR = geometry->simplePolygonLaplacian;
+    SparseMatrix<double>& L_VEM = geometry->polygonLaplacian;
+    SparseMatrix<double>& M = geometry->vertexGalerkinMassMatrix;
+    SparseMatrix<double>& ML = geometry->vertexLumpedMassMatrix;
+    SparseMatrix<double>& M_VR = geometry->simplePolygonVertexGalerkinMassMatrix;
+    SparseMatrix<double>& M_VRL = geometry->simplePolygonVertexLumpedMassMatrix;
+    SparseMatrix<double>& M_VEM = geometry->polygonVertexLumpedMassMatrix;
+
+    std::cerr << "Laplace matrices:" << std::endl;
+    std::cerr << "\t|L - L_VR|: " << (L - L_VR).norm() << "\t" << (L - L_VR).norm() / L.norm() << std::endl;
+    std::cerr << "\t|L - L_VEM|: " << (L - L_VEM).norm() << "\t" << (L - L_VEM).norm() / L.norm() << std::endl;
+    std::cerr << "Mass matrices:" << std::endl;
+    std::cerr << "\t|M - M_VR|: " << (M - M_VR).norm() << "\t" << (M - M_VR).norm() / M.norm() << std::endl;
+    std::cerr << "\t|ML - M_VRL|: " << (ML - M_VRL).norm() << "\t" << (ML - M_VRL).norm() / ML.norm() << std::endl;
+    std::cerr << "\t|ML - M_VEM|: " << (ML - M_VEM).norm() << "\t" << (ML - M_VEM).norm() / ML.norm() << std::endl;
+    std::cerr << "Unlumped vs. lumped matrices (should have significant but identical errors):" << std::endl;
+    std::cerr << "\t|M - M_VRL|: " << (M - M_VRL).norm() << "\t" << (M - M_VRL).norm() / M.norm() << std::endl;
+    std::cerr << "\t|M - M_VEM|: " << (M - M_VEM).norm() << "\t" << (M - M_VEM).norm() / M.norm() << std::endl;
+    std::cerr << "\t|M - ML|: " << (M - ML).norm() << "\t" << (M - ML).norm() / M.norm() << std::endl;
+
+    geometry->unrequireVertexGalerkinMassMatrix();
+    geometry->unrequireVertexLumpedMassMatrix();
+    geometry->unrequireCotanLaplacian();
+    geometry->unrequireSimplePolygonLaplacian();
+    geometry->unrequireSimplePolygonVertexLumpedMassMatrix();
+    geometry->unrequireSimplePolygonVertexGalerkinMassMatrix();
+    geometry->unrequirePolygonLaplacian();
+    geometry->unrequirePolygonVertexLumpedMassMatrix();
+}
+
+/* Check that gradient, divergence, Laplacian can be assembled as expected from DEC operators. */
+void testDECOperators() {
+    std::cerr << "testDECOperators()..." << std::endl;
+    geometry->requirePolygonDECOperators();
+    geometry->requirePolygonLaplacian();
+
+    double epsilon = 1e-8;
+    SparseMatrix<double>& L = geometry->polygonLaplacian;
+    SparseMatrix<double>& h0 = geometry->polygonHodge0;
+    SparseMatrix<double>& h0Inv = geometry->polygonHodge0Inverse;
+    SparseMatrix<double>& h1 = geometry->polygonHodge1;
+    SparseMatrix<double>& h2 = geometry->polygonHodge2;
+    SparseMatrix<double>& h2Inv = geometry->polygonHodge2Inverse;
+    SparseMatrix<double>& d0 = geometry->polygonD0;
+    SparseMatrix<double>& d1 = geometry->polygonD1;
+    std::cerr << "|L - d*d|: " << (L - d0.transpose() * h1 * d0).norm() << std::endl;
+    // assert((L - d0.transpose() * h1 * d0).norm() < epsilon);
+
+    if (mesh->isTriangular()) {
+        geometry->requireDECOperators();
+        geometry->requireCotanLaplacian();
+
+        std::cerr << "|C - d*d|: "
+                  << (geometry->cotanLaplacian - geometry->d0.transpose() * geometry->hodge1 * geometry->d0).norm()
+                  << std::endl;
+        std::cerr << "|d0 - pd0|: " << (d0 - geometry->d0).norm() << std::endl;
+        std::cerr << "|d1 - pd1|: " << (d1 - geometry->d1).norm() << std::endl;
+        std::cerr << "|h0 - ph0|: " << (h0 - geometry->hodge0).norm() << std::endl;
+        std::cerr << "|h1 - ph1|: " << (h1 - geometry->hodge1).norm() << std::endl;
+        std::cerr << "|h2 - ph2|: " << (h2 - geometry->hodge2).norm() << std::endl;
+
+
+        std::cerr << h1 << "\n" << std::endl;
+        std::cerr << geometry->hodge1 << std::endl;
+
+        geometry->unrequireDECOperators();
+        geometry->unrequireCotanLaplacian();
+    }
+
+    // TODO: Check gradient & divergence with sharp and flat operators
+
+    geometry->unrequirePolygonDECOperators();
+    geometry->unrequirePolygonLaplacian();
+    std::cerr << "\tDone testing." << std::endl;
+}
+
+/* Solve Poisson problems using both sets of polygon operators. */
+void solvePoissonProblems() {
+    std::cerr << "solvePoissonProblems()..." << std::endl;
+    // Randomly choose some vertex sources.
+    size_t V = mesh->nVertices();
+    int nSources = randomInt(1, 5);
+    std::vector<Vector3> sourcePositions(nSources);
+    Vector<double> rho = Vector<double>::Zero(V);
+    for (int i = 0; i < nSources; i++) {
+        size_t vIdx = randomIndex(V);
+        sourcePositions[i] = geometry->vertexPositions[vIdx];
+        double weight = randomInt(1, 5);
+        weight *= (unitRand() < 0.5) ? 1. : -1.;
+        rho[vIdx] += weight;
+    }
+
+    // Plot sources.
+    polyscope::registerPointCloud("Poisson sources", sourcePositions);
+
+    geometry->requireSimplePolygonLaplacian();
+    geometry->requireSimplePolygonVertexLumpedMassMatrix();
+    geometry->requireSimplePolygonVertexGalerkinMassMatrix();
+    geometry->requirePolygonLaplacian();
+    geometry->requirePolygonVertexLumpedMassMatrix();
+
+    SparseMatrix<double> L_VR = geometry->simplePolygonLaplacian;
+    SparseMatrix<double> L_VEM = geometry->polygonLaplacian;
+    SparseMatrix<double> M_VRL = geometry->simplePolygonVertexLumpedMassMatrix;
+    SparseMatrix<double> M_VR = geometry->simplePolygonVertexGalerkinMassMatrix;
+    SparseMatrix<double> M_VEM = geometry->polygonVertexLumpedMassMatrix;
+    double totalRho_VR = (M_VR * rho).sum();
+    double totalRho_VRL = (M_VRL * rho).sum();
+    double totalRho_VEM = (M_VEM * rho).sum();
+    Vector<double> ones = Vector<double>::Ones(V);
+    double totalArea_VR = (M_VR * ones).sum();
+    double totalArea_VEM = (M_VEM * ones).sum();
+    std::cerr << "\ttotalArea_VR: " << totalArea_VR << std::endl;
+    std::cerr << "\ttotalArea_VEM: " << totalArea_VEM << std::endl;
+    Vector<double> rhoBar_VR = Vector<double>::Ones(V) * (totalRho_VR / totalArea_VR);
+    Vector<double> rhs_VR = M_VR * (rhoBar_VR - rho);
+    Vector<double> rhoBar_VRL = Vector<double>::Ones(V) * (totalRho_VRL / totalArea_VR);
+    Vector<double> rhs_VRL = M_VRL * (rhoBar_VRL - rho);
+    Vector<double> rhoBar_VEM = Vector<double>::Ones(V) * (totalRho_VEM / totalArea_VEM);
+    Vector<double> rhs_VEM = M_VEM * (rhoBar_VEM - rho);
+    shiftDiagonal(L_VR, 1e-8);
+    shiftDiagonal(L_VEM, 1e-8);
+    Vector<double> VRSoln = solvePositiveDefinite(L_VR, rhs_VR);
+    Vector<double> VRLSoln = solvePositiveDefinite(L_VR, rhs_VRL);
+    Vector<double> VEMSoln = solvePositiveDefinite(L_VEM, rhs_VEM);
+    std::cerr << "\t[poisson] |VRSoln - VRLSoln| / |VRSoln|: " << (VRSoln - VRLSoln).norm() / VRSoln.norm()
+              << std::endl;
+    std::cerr << "\t[poisson] |VRSoln - VRLSoln| / |VRLSoln|: " << (VRSoln - VRLSoln).norm() / VRLSoln.norm()
+              << std::endl;
+    std::cerr << "\t[poisson] |VRSoln - VEMSoln| / |VRSoln|: " << (VRSoln - VEMSoln).norm() / VRSoln.norm()
+              << std::endl;
+    std::cerr << "\t[poisson] |VRSoln - VEMSoln| / |VEMSoln|: " << (VRSoln - VEMSoln).norm() / VEMSoln.norm()
+              << std::endl;
+    std::cerr << "\n";
+
+    if (mesh->isTriangular()) {
+        // Solve using standard cotan operator.
+        geometry->requireVertexLumpedMassMatrix();
+        geometry->requireCotanLaplacian();
+        geometry->requireFaceAreas();
+
+        SparseMatrix<double> C = geometry->cotanLaplacian;
+        SparseMatrix<double> M = geometry->vertexLumpedMassMatrix;
+        double totalArea = 0.;
+        for (Face f : mesh->faces()) totalArea += geometry->faceAreas[f];
+        std::cerr << "\ttotalArea: " << totalArea << std::endl;
+        double totalRho = (M * rho).sum();
+        Vector<double> rhoBar = Vector<double>::Ones(V) * (totalRho / totalArea);
+        Vector<double> rhs = M * (rhoBar - rho);
+        shiftDiagonal(C, 1e-8);
+        Vector<double> triSoln = solvePositiveDefinite(C, rhs);
+        // On triangle meshes, both polygon Laplacians and mass matrices (and hence solutions) should coincide with the
+        // cotan solution.
+        std::cerr << "\ttotalRho: " << totalRho << "\tVR: " << totalRho_VR << "\tVRL: " << totalRho_VRL
+                  << "\tVEM: " << totalRho_VEM << std::endl;
+        std::cerr << "\t|rhs - rhs_VR|: " << (rhs - rhs_VR).norm() << "\t" << (rhs - rhs_VR).norm() / rhs.norm()
+                  << std::endl;
+        std::cerr << "\t|rhs - rhs_VRL|: " << (rhs - rhs_VRL).norm() << "\t" << (rhs - rhs_VRL).norm() / rhs.norm()
+                  << std::endl;
+        std::cerr << "\t|rhs - rhs_VEM|: " << (rhs - rhs_VEM).norm() << "\t" << (rhs - rhs_VEM).norm() / rhs.norm()
+                  << std::endl;
+        psMesh->addVertexScalarQuantity("tri", triSoln);
+        psMesh->addVertexScalarQuantity("VR", VRSoln);
+        psMesh->addVertexScalarQuantity("VR (lumped)", VRLSoln);
+        psMesh->addVertexScalarQuantity("VEM", VEMSoln);
+        std::cerr << "\t[poisson] |VR - truth|: " << (triSoln - VRSoln).norm() << "\t"
+                  << (triSoln - VRSoln).norm() / triSoln.norm() << std::endl;
+        std::cerr << "\t[poisson] |VR (lumped) - truth|: " << (triSoln - VRLSoln).norm() << "\t"
+                  << (triSoln - VRLSoln).norm() / triSoln.norm() << std::endl;
+        std::cerr << "\t[poisson] |VEM - truth|: " << (triSoln - VEMSoln).norm() << "\t"
+                  << (triSoln - VEMSoln).norm() / triSoln.norm() << std::endl;
+
+        geometry->unrequireCotanLaplacian();
+        geometry->unrequireVertexLumpedMassMatrix();
+        geometry->unrequireFaceAreas();
+    }
+
+    geometry->unrequireSimplePolygonLaplacian();
+    geometry->unrequireSimplePolygonVertexLumpedMassMatrix();
+    geometry->unrequirePolygonLaplacian();
+    geometry->unrequirePolygonVertexLumpedMassMatrix();
+    std::cerr << "\tDone testing." << std::endl;
+}
+
+/* Implement the scalar heat method -- good way to test the gradient, divergence, and Laplacian. */
+void solveGeodesicDistance() {
+    std::cerr << "solveGeodesicDistance()..." << std::endl;
+    // Randomly choose some vertex sources.
+    size_t V = mesh->nVertices();
+    size_t F = mesh->nFaces();
+    Vector<double> rho = Vector<double>::Zero(V);
+    const int nSources = randomInt(1, 5);
+    std::vector<Vector3> sourcePositions(nSources);
+    std::vector<Vertex> sources(nSources);
+    for (int i = 0; i < nSources; i++) {
+        size_t idx = randomIndex(V);
+        sourcePositions[i] = geometry->vertexPositions[idx];
+        sources[i] = mesh->vertex(idx);
+        rho[idx] += 1.;
+    }
+
+    // Plot sources.
+    polyscope::registerPointCloud("geodesic sources", sourcePositions);
+
+    geometry->requireVertexIndices();
+    geometry->requirePolygonVertexLumpedMassMatrix();
+    geometry->requirePolygonLaplacian();
+    geometry->requirePolygonGradientMatrix();
+    geometry->requirePolygonDivergenceMatrix();
+    geometry->requirePolygonDECOperators();
+
+    // Flow vector heat.
+    SparseMatrix<double> M = geometry->polygonVertexLumpedMassMatrix;
+    SparseMatrix<double> L = geometry->polygonLaplacian;
+    double shortTime = MAX_DIAGONAL_LENGTH * MAX_DIAGONAL_LENGTH;
+    SparseMatrix<double> LHS = M + shortTime * L;
+    Vector<double> X = solvePositiveDefinite(LHS, rho);
+
+    // Normalize gradient.
+    Vector<double> Y = geometry->polygonGradientMatrix * X; // 3|F|
+    for (size_t i = 0; i < F; i++) {
+        Vector3 g = {Y[3 * i], Y[3 * i + 1], Y[3 * i + 2]};
+        g /= g.norm();
+        Y[3 * i] = g[0];
+        Y[3 * i + 1] = g[1];
+        Y[3 * i + 2] = g[2];
+    }
+
+    // Integrate.
+    Vector<double> div = geometry->polygonDivergenceMatrix * Y;
+    shiftDiagonal(L, 1e-8);
+    Vector<double> VEMDistances = solvePositiveDefinite(L, div);
+    VEMDistances *= -1.; // since div * grad gives positive Laplacian
+
+    // Shift solution.
+    double avgVEM = 0.;
+    for (const Vertex& v : sources) {
+        size_t vIdx = geometry->vertexIndices[v];
+        avgVEM += VEMDistances[vIdx];
+    }
+    avgVEM /= nSources;
+    VEMDistances -= avgVEM * Vector<double>::Ones(V);
+
+    geometry->unrequireVertexIndices();
+    geometry->unrequirePolygonLaplacian();
+    geometry->unrequirePolygonGradientMatrix();
+    geometry->unrequirePolygonDivergenceMatrix();
+    geometry->unrequirePolygonVertexLumpedMassMatrix();
+    geometry->unrequirePolygonDECOperators();
+
+    psMesh->addVertexSignedDistanceQuantity("VEM", VEMDistances);
+
+    if (mesh->isTriangular()) {
+        // Solve using standard operators.
+        HeatMethodDistanceSolver triSolver(*geometry);
+        VertexData<double> triDistances = triSolver.computeDistance(sources);
+        psMesh->addVertexSignedDistanceQuantity("tri", triDistances);
+        std::cerr << "[distance] |VEM - truth|: " << (triDistances.toVector() - VEMDistances).norm() << "\t"
+                  << (triDistances.toVector() - VEMDistances).norm() / triDistances.toVector().norm() << std::endl;
+    }
+    std::cerr << "\tDone testing." << std::endl;
+}
+
 void solveVectorHeatMethod() {
 
     // Randomly choose some vertex sources with random magnitudes.
@@ -375,23 +481,39 @@ void solveVectorHeatMethod() {
 
     if (mesh->isTriangular()) {
         // Solve using standard operators.
-        VectorHeatMethodSolver triSolver(*geometry);
-        VertexData<double> triScalarExtension = triSolver.extendScalar(sourceMagnitudes);
-        VertexData<Vector2> triVectorExtension = triSolver.transportTangentVectors(sourceVectors);
-        VertexData<Vector2> triSoln(*mesh);
-        for (Vertex v : mesh->vertices()) triSoln[v] = triVectorExtension[v] * triScalarExtension[v];
+        std::unique_ptr<VertexPositionGeometry> manifoldGeom;
+        std::unique_ptr<ManifoldSurfaceMesh> manifoldMesh;
+        manifoldMesh = mesh->toManifoldMesh();
+        manifoldGeom = geometry->reinterpretTo(*manifoldMesh);
+        VectorHeatMethodSolver triSolver(*manifoldGeom);
+        // re-interpret sources on manifold mesh
+        std::vector<std::tuple<Vertex, double>> sourceMagnitudesManifold(nSources);
+        std::vector<std::tuple<Vertex, Vector2>> sourceVectorsManifold(nSources);
+        for (int i = 0; i < nSources; i++) {
+            size_t vIdx = geometry->vertexIndices[std::get<0>(sourceMagnitudes[i])];
+            Vertex manifoldVertex = manifoldMesh->vertex(vIdx);
+            sourceMagnitudesManifold[i] = std::make_tuple(manifoldVertex, std::get<1>(sourceMagnitudes[i]));
+            sourceVectorsManifold[i] = std::make_tuple(manifoldVertex, std::get<1>(sourceVectors[i]));
+        }
+        VertexData<double> triScalarExtension = triSolver.extendScalar(sourceMagnitudesManifold);
+        VertexData<Vector2> triVectorExtension = triSolver.transportTangentVectors(sourceVectorsManifold);
+        VertexData<Vector2> triSoln(*manifoldMesh);
+        for (Vertex v : manifoldMesh->vertices()) triSoln[v] = triVectorExtension[v] * triScalarExtension[v];
+
         psMesh->addVertexTangentVectorQuantity("VHM (tri)", triSoln, VBASISX, VBASISY);
         psMesh->addVertexTangentVectorQuantity("VHM (poly)", polySoln, VBASISX, VBASISY);
-        std::cerr << "|scalars - truth|: " << (triScalarExtension.toVector() - scalarExtension).norm() << std::endl;
+        std::cerr << "|scalars - truth|: " << (triScalarExtension.toVector() - scalarExtension).norm() << "\t"
+                  << (triScalarExtension.toVector() - scalarExtension).norm() / triScalarExtension.toVector().norm()
+                  << std::endl;
         double vectorResidual = 0.;
         double solnResidual = 0.;
         for (Vertex v : mesh->vertices()) {
             size_t vIdx = geometry->vertexIndices[v];
-            vectorResidual += (triVectorExtension[v] - Vector2::fromComplex(vectorExtension[vIdx])).norm();
-            solnResidual += (polySoln[v] - triSoln[v]).norm();
+            vectorResidual += (triVectorExtension[vIdx] - Vector2::fromComplex(vectorExtension[vIdx])).norm();
+            solnResidual += (polySoln[v] - triSoln[vIdx]).norm();
         }
-        std::cerr << "|vectors - truth|: " << vectorResidual << std::endl;
-        std::cerr << "|soln - truth|: " << solnResidual << std::endl;
+        std::cerr << "|vectors - truth|: " << vectorResidual << "\t" << vectorResidual / V << std::endl;
+        std::cerr << "|soln - truth|: " << solnResidual << "\t" << solnResidual / V << std::endl;
     }
 
     geometry->unrequireVertexIndices();
@@ -405,11 +527,16 @@ void myCallback() {
     if (ImGui::Button("Timing")) {
         timing();
     }
-    if (ImGui::Button("Test DEC operators")) {
-        testDECOperators();
-    }
     if (ImGui::Button("Test mass lumping")) {
         testMassLumping();
+    }
+    if (mesh->isTriangular()) {
+        if (ImGui::Button("Test on triangle meshes")) {
+            testOnTriangleMeshes();
+        }
+    }
+    if (ImGui::Button("Test DEC operators")) {
+        testDECOperators();
     }
     if (ImGui::Button("Solve Poisson problems")) {
         solvePoissonProblems();
@@ -470,16 +597,19 @@ int main(int argc, char** argv) {
         }
 
         if (mesh->isTriangular()) {
-            VBASISX = VertexData<Vector3>(*mesh);
-            VBASISY = VertexData<Vector3>(*mesh);
+            VBASISX.resize(mesh->nVertices());
+            VBASISY.resize(mesh->nVertices());
             geometry->requireVertexNormals();
+            geometry->requireVertexIndices();
             for (Vertex v : mesh->vertices()) {
+                size_t vIdx = geometry->vertexIndices[v];
                 Vector3 xVec = geometry->halfedgeVector(v.halfedge());
                 xVec /= xVec.norm();
-                VBASISX[v] = xVec;
-                VBASISY[v] = cross(geometry->vertexNormals[v], xVec);
+                VBASISX[vIdx] = xVec;
+                VBASISY[vIdx] = cross(geometry->vertexNormals[v], xVec);
             }
             geometry->unrequireVertexNormals();
+            geometry->requireVertexIndices();
         }
     }
 
