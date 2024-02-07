@@ -209,6 +209,7 @@ void testDECOperators() {
         geometry->requireDECOperators();
         geometry->requireCotanLaplacian();
 
+        std::cerr << "|C - L|: " << (geometry->cotanLaplacian - L).norm() << std::endl;
         std::cerr << "|C - d*d|: "
                   << (geometry->cotanLaplacian - geometry->d0.transpose() * geometry->hodge1 * geometry->d0).norm()
                   << std::endl;
@@ -217,7 +218,6 @@ void testDECOperators() {
         std::cerr << "|h0 - ph0|: " << (h0 - geometry->hodge0).norm() << std::endl;
         std::cerr << "|h1 - ph1|: " << (h1 - geometry->hodge1).norm() << std::endl;
         std::cerr << "|h2 - ph2|: " << (h2 - geometry->hodge2).norm() << std::endl;
-
 
         std::cerr << h1 << "\n" << std::endl;
         std::cerr << geometry->hodge1 << std::endl;
