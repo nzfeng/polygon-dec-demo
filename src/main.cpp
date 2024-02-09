@@ -485,6 +485,12 @@ void solveVectorHeatMethod() {
         std::unique_ptr<ManifoldSurfaceMesh> manifoldMesh;
         manifoldMesh = mesh->toManifoldMesh();
         manifoldGeom = geometry->reinterpretTo(*manifoldMesh);
+
+        manifoldGeom->requireVertexConnectionLaplacian();
+        // std::cerr << manifoldGeom->vertexConnectionLaplacian << std::endl;
+        manifoldGeom->unrequireVertexConnectionLaplacian();
+
+
         VectorHeatMethodSolver triSolver(*manifoldGeom);
         // re-interpret sources on manifold mesh
         std::vector<std::tuple<Vertex, double>> sourceMagnitudesManifold(nSources);
