@@ -1,3 +1,4 @@
+#include "geometrycentral/surface/exact_geodesics.h"
 #include "geometrycentral/surface/heat_method_distance.h"
 #include "geometrycentral/surface/manifold_surface_mesh.h"
 #include "geometrycentral/surface/meshio.h"
@@ -46,14 +47,12 @@ void timing() {
     ms_int = duration_cast<milliseconds>(t2 - t1);
     std::cerr << "\trequireCotanLaplacian(): " << ms_int.count() << "ms" << std::endl;
 
-    std::cerr << "\n";
     t1 = high_resolution_clock::now();
     geometry->requireVertexLumpedMassMatrix();
     t2 = high_resolution_clock::now();
     ms_int = duration_cast<milliseconds>(t2 - t1);
     std::cerr << "\trequireVertexLumpedMassMatrix(): " << ms_int.count() << "ms" << std::endl;
 
-    std::cerr << "\n";
     t1 = high_resolution_clock::now();
     geometry->requireDECOperators();
     t2 = high_resolution_clock::now();
@@ -202,25 +201,18 @@ void testDECOperators() {
     SparseMatrix<double>& h2Inv = geometry->polygonHodge2Inverse;
     SparseMatrix<double>& d0 = geometry->polygonD0;
     SparseMatrix<double>& d1 = geometry->polygonD1;
-    std::cerr << "|L - d*d|: " << (L - d0.transpose() * h1 * d0).norm() << std::endl;
-    // assert((L - d0.transpose() * h1 * d0).norm() < epsilon);
+    assert((L - d0.transpose() * h1 * d0).norm() < epsilon);
 
     if (mesh->isTriangular()) {
         geometry->requireDECOperators();
         geometry->requireCotanLaplacian();
 
-        std::cerr << "|C - L|: " << (geometry->cotanLaplacian - L).norm() << std::endl;
-        std::cerr << "|C - d*d|: "
+        std::cerr << "\t|C - L|: " << (geometry->cotanLaplacian - L).norm() << std::endl;
+        std::cerr << "\t|C - d*d|: "
                   << (geometry->cotanLaplacian - geometry->d0.transpose() * geometry->hodge1 * geometry->d0).norm()
                   << std::endl;
-        std::cerr << "|d0 - pd0|: " << (d0 - geometry->d0).norm() << std::endl;
-        std::cerr << "|d1 - pd1|: " << (d1 - geometry->d1).norm() << std::endl;
-        std::cerr << "|h0 - ph0|: " << (h0 - geometry->hodge0).norm() << std::endl;
-        std::cerr << "|h1 - ph1|: " << (h1 - geometry->hodge1).norm() << std::endl;
-        std::cerr << "|h2 - ph2|: " << (h2 - geometry->hodge2).norm() << std::endl;
-
-        std::cerr << h1 << "\n" << std::endl;
-        std::cerr << geometry->hodge1 << std::endl;
+        std::cerr << "\t|h0 - ph0|: " << (h0 - geometry->hodge0).norm() << std::endl;
+        std::cerr << "\t|h2 - ph2|: " << (h2 - geometry->hodge2).norm() << std::endl;
 
         geometry->unrequireDECOperators();
         geometry->unrequireCotanLaplacian();
@@ -412,10 +404,18 @@ void solveGeodesicDistance() {
     if (mesh->isTriangular()) {
         // Solve using standard operators.
         HeatMethodDistanceSolver triSolver(*geometry);
-        VertexData<double> triDistances = triSolver.computeDistance(sources);
-        psMesh->addVertexSignedDistanceQuantity("tri", triDistances);
-        std::cerr << "[distance] |VEM - truth|: " << (triDistances.toVector() - VEMDistances).norm() << "\t"
-                  << (triDistances.toVector() - VEMDistances).norm() / triDistances.toVector().norm() << std::endl;
+        VertexData<double> hmDistances = triSolver.computeDistance(sources);
+
+        GeodesicAlgorithmExact mmp(*mesh, *geometry);
+        mmp.propagate(sources);
+        VertexData<double> mmpDistances = mmp.getDistanceFunction();
+
+        psMesh->addVertexSignedDistanceQuantity("heat method", hmDistances);
+        std::cerr << "\t[distance] |VEM - truth|: " << (mmpDistances.toVector() - VEMDistances).norm() << "\t"
+                  << (mmpDistances.toVector() - VEMDistances).norm() / mmpDistances.toVector().norm() << std::endl;
+        std::cerr << "\t[distance] |heat method - truth|: " << (mmpDistances.toVector() - hmDistances.toVector()).norm()
+                  << "\t" << (mmpDistances.toVector() - hmDistances.toVector()).norm() / mmpDistances.toVector().norm()
+                  << std::endl;
     }
     std::cerr << "\tDone testing." << std::endl;
 }
