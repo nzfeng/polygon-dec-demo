@@ -218,7 +218,7 @@ void testDECOperators() {
         geometry->unrequireCotanLaplacian();
     }
 
-    // TODO: Check gradient & divergence with sharp and flat operators
+    // TODO: Check gradient & divergence with sharp and flat operators?
 
     geometry->unrequirePolygonDECOperators();
     geometry->unrequirePolygonLaplacian();
@@ -420,6 +420,7 @@ void solveGeodesicDistance() {
     std::cerr << "\tDone testing." << std::endl;
 }
 
+/* Implement the vector heat method -- good way to test the vector Laplacian. */
 void solveVectorHeatMethod() {
 
     // Randomly choose some vertex sources with random magnitudes.
