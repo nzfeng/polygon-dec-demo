@@ -74,6 +74,7 @@ add_subdirectory(../../Forks/polyscope deps/polyscope)
 # == Build our project stuff
 
 set(SRCS
+  src/signed_heat_polygon.cpp
   src/main.cpp
 )
 

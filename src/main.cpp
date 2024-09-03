@@ -11,6 +11,8 @@
 #include "polyscope/polyscope.h"
 #include "polyscope/surface_mesh.h"
 
+#include "signed_heat_polygon.h"
+
 #include "args/args.hxx"
 #include "imgui.h"
 
@@ -33,6 +35,89 @@ std::vector<Vector3> VBASISX, VBASISY;
 
 // == other data
 double MAX_DIAGONAL_LENGTH = 0.;
+double MEAN_EDGE_LENGTH = 0.;
+std::vector<std::vector<Vertex>> CURVES;
+std::unique_ptr<SignedHeatPolygon> signedHeatSolver;
+
+std::vector<std::vector<Vertex>> readCurves(const std::string& filename) {
+
+    std::vector<std::vector<Vertex>> curves;
+    std::ifstream curr_file(filename.c_str());
+    std::string line;
+    std::string X;
+    size_t idx;
+    bool flip = false;
+    bool read = false;
+    std::vector<bool> curveFlips;
+
+    if (curr_file.is_open()) {
+        while (!curr_file.eof()) {
+            getline(curr_file, line);
+            // Ignore any newlines
+            if (line == "") {
+                continue;
+            }
+            std::istringstream iss(line);
+            iss >> X;
+            if (X == "signed_curve") {
+                iss >> flip;
+                curveFlips.push_back(flip);
+                curves.emplace_back();
+                read = true;
+            } else if (X == "unsigned_curve") {
+                read = false;
+            } else if (X == "unsigned_point") {
+                read = false;
+            }
+            if (read) {
+                if (X == "v") {
+                    iss >> idx;
+                    curves.back().emplace_back(mesh->vertex(idx));
+                } else if (X == "l") {
+                    while (true) {
+                        if (iss.eof()) break;
+                        iss >> idx;
+                        idx -= 1; // OBJ elements are 1-indexed, whereas geometry-central uses 0-indexing
+                        curves.back().emplace_back(mesh->vertex(idx));
+                    }
+                }
+            }
+        }
+        curr_file.close();
+
+        for (size_t i = 0; i < curves.size(); i++) {
+            if (curveFlips[i]) {
+                std::reverse(curves[i].begin(), curves[i].end());
+            }
+        }
+
+    } else {
+        std::cerr << "Could not open file <" << filename << ">." << std::endl;
+    }
+    return curves;
+}
+
+void displayInput(const std::vector<std::vector<Vertex>>& curves, const std::string& name = "input",
+                  bool display = true) {
+
+    std::vector<Vector3> nodes;
+    std::vector<std::array<size_t, 2>> edges;
+
+    size_t offset = 0;
+    for (const auto& curve : curves) {
+        size_t N = curve.size();
+        for (size_t i = 0; i < N - 1; i++) {
+            nodes.push_back(geometry->vertexPositions[curve[i]]);
+            edges.push_back({offset + i, offset + i + 1});
+        }
+        nodes.push_back(geometry->vertexPositions[curve[N - 1]]);
+        offset += N;
+    }
+
+    auto psCurve = polyscope::registerCurveNetwork(name, nodes, edges);
+    psCurve->setEnabled(display);
+    psCurve->setColor({1, 0.3, 0});
+}
 
 void timing() {
 
@@ -360,7 +445,7 @@ void solveGeodesicDistance() {
     geometry->requirePolygonDivergenceMatrix();
     geometry->requirePolygonDECOperators();
 
-    // Flow vector heat.
+    // Flow heat.
     SparseMatrix<double> M = geometry->polygonVertexLumpedMassMatrix;
     SparseMatrix<double> L = geometry->polygonLaplacian;
     double shortTime = MAX_DIAGONAL_LENGTH * MAX_DIAGONAL_LENGTH;
@@ -420,20 +505,28 @@ void solveGeodesicDistance() {
     std::cerr << "\tDone testing." << std::endl;
 }
 
-/* Implement the vector heat method -- good way to test the vector Laplacian. */
 void solveVectorHeatMethod() {
 
     // Randomly choose some vertex sources with random magnitudes.
     size_t V = mesh->nVertices();
-    const int nSources = randomInt(1, 5);
+    const int nSources = randomInt(2, 5);
     std::vector<std::tuple<Vertex, double>> sourceMagnitudes(nSources);
     std::vector<std::tuple<Vertex, Vector2>> sourceVectors(nSources);
+    std::vector<Vector3> sourcePositions(nSources);
+    VertexData<Vector3> vectorSources(*mesh);
     for (int i = 0; i < nSources; i++) {
-        Vertex v = mesh->vertex(randomIndex(V));
+        size_t idx = randomIndex(V);
+        Vertex v = mesh->vertex(idx);
         sourceMagnitudes[i] = std::make_tuple(v, randomReal(1., 5.));
         Vector2 vec = {randomReal(-1., 1.), randomReal(-1., 1.)};
-        sourceVectors[i] = std::make_tuple(v, vec / vec.norm());
+        vec /= vec.norm();
+        sourceVectors[i] = std::make_tuple(v, vec);
+        sourcePositions[i] = geometry->vertexPositions[idx];
+        vectorSources[v] = vec[0] * VBASISX[idx] + vec[1] * VBASISX[idx];
     }
+
+    // Plot sources.
+    polyscope::registerPointCloud("source locations", sourcePositions);
 
     geometry->requireVertexIndices();
     geometry->requirePolygonLaplacian();
@@ -480,6 +573,14 @@ void solveVectorHeatMethod() {
         polySoln[i] = scalarExtension[i] * vectorExtension[i];
     }
 
+    // Visualize solution.
+    VertexData<Vector3> polySolnR3(*mesh);
+    for (size_t i = 0; i < V; i++) {
+        polySolnR3[i] = polySoln[i][0] * VBASISX[i] + polySoln[i][1] * VBASISY[i];
+    }
+    psMesh->addVertexVectorQuantity("vector sources", vectorSources);
+    psMesh->addVertexVectorQuantity("VHM", polySolnR3);
+
     if (mesh->isTriangular()) {
         // Solve using standard operators.
         std::unique_ptr<VertexPositionGeometry> manifoldGeom;
@@ -488,11 +589,20 @@ void solveVectorHeatMethod() {
         manifoldGeom = geometry->reinterpretTo(*manifoldMesh);
 
         manifoldGeom->requireVertexConnectionLaplacian();
+        // std::cerr << geometry->polygonVertexConnectionLaplacian << std::endl;
         // std::cerr << manifoldGeom->vertexConnectionLaplacian << std::endl;
+        // std::cerr << geometry->polygonVertexConnectionLaplacian - manifoldGeom->vertexConnectionLaplacian <<
+        // std::endl;
+        std::cerr << (geometry->polygonVertexConnectionLaplacian - manifoldGeom->vertexConnectionLaplacian).norm()
+                  << "\t"
+                  << (geometry->polygonVertexConnectionLaplacian - manifoldGeom->vertexConnectionLaplacian).norm() /
+                         (manifoldGeom->vertexConnectionLaplacian).norm()
+                  << std::endl;
         manifoldGeom->unrequireVertexConnectionLaplacian();
 
 
-        VectorHeatMethodSolver triSolver(*manifoldGeom);
+        double tCoef = (MAX_DIAGONAL_LENGTH * MAX_DIAGONAL_LENGTH) / (MEAN_EDGE_LENGTH * MEAN_EDGE_LENGTH);
+        VectorHeatMethodSolver triSolver(*manifoldGeom, tCoef);
         // re-interpret sources on manifold mesh
         std::vector<std::tuple<Vertex, double>> sourceMagnitudesManifold(nSources);
         std::vector<std::tuple<Vertex, Vector2>> sourceVectorsManifold(nSources);
@@ -509,6 +619,8 @@ void solveVectorHeatMethod() {
 
         psMesh->addVertexTangentVectorQuantity("VHM (tri)", triSoln, VBASISX, VBASISY);
         psMesh->addVertexTangentVectorQuantity("VHM (poly)", polySoln, VBASISX, VBASISY);
+        psMesh->addVertexScalarQuantity("scalar ext. (tri)", triScalarExtension);
+        psMesh->addVertexScalarQuantity("scalar ext. (poly)", scalarExtension);
         std::cerr << "|scalars - truth|: " << (triScalarExtension.toVector() - scalarExtension).norm() << "\t"
                   << (triScalarExtension.toVector() - scalarExtension).norm() / triScalarExtension.toVector().norm()
                   << std::endl;
@@ -554,6 +666,10 @@ void myCallback() {
     if (ImGui::Button("Solve Vector Heat Method")) {
         solveVectorHeatMethod();
     }
+    if (ImGui::Button("Solve Signed Heat Method")) {
+        VertexData<double> phi = signedHeatSolver->computeDistance(CURVES);
+        psMesh->addVertexSignedDistanceQuantity("GSD", phi)->setEnabled(true);
+    }
 }
 
 int main(int argc, char** argv) {
@@ -561,6 +677,7 @@ int main(int argc, char** argv) {
     // Configure the argument parser
     args::ArgumentParser parser("A program demonstrating use of various DEC operators for polygon meshes.");
     args::Positional<std::string> meshFilename(parser, "mesh", "A mesh file.");
+    args::ValueFlag<std::string> inputFilename(parser, "input", "Input curve filepath", {"i", "input"});
 
     // Parse args
     try {
@@ -587,6 +704,7 @@ int main(int argc, char** argv) {
         // psMesh->setAllPermutations(polyscopePermutations(*mesh)); // not valid for polygon meshes
 
         MAX_DIAGONAL_LENGTH = 0.; // maximum length over all polygon diagonals
+        MEAN_EDGE_LENGTH = 0.;
         for (Face f : mesh->faces()) {
             std::vector<Vertex> vertices;
             for (Vertex v : f.adjacentVertices()) {
@@ -602,22 +720,61 @@ int main(int argc, char** argv) {
                 }
             }
         }
-
-        if (mesh->isTriangular()) {
-            VBASISX.resize(mesh->nVertices());
-            VBASISY.resize(mesh->nVertices());
-            geometry->requireVertexNormals();
-            geometry->requireVertexIndices();
-            for (Vertex v : mesh->vertices()) {
-                size_t vIdx = geometry->vertexIndices[v];
-                Vector3 xVec = geometry->halfedgeVector(v.halfedge());
-                xVec /= xVec.norm();
-                VBASISX[vIdx] = xVec;
-                VBASISY[vIdx] = cross(geometry->vertexNormals[v], xVec);
-            }
-            geometry->unrequireVertexNormals();
-            geometry->requireVertexIndices();
+        geometry->requireEdgeLengths();
+        for (Edge e : mesh->edges()) {
+            MEAN_EDGE_LENGTH += geometry->edgeLengths[e];
         }
+        MEAN_EDGE_LENGTH /= mesh->nEdges();
+        geometry->unrequireEdgeLengths();
+
+        VertexData<Vector3> vertexNormals(*mesh);
+        if (mesh->isTriangular()) {
+            geometry->requireVertexNormals();
+            vertexNormals = geometry->vertexNormals;
+            geometry->unrequireVertexNormals();
+        } else {
+            for (Vertex v : mesh->vertices()) {
+                double totalArea = 0.;
+                Vector3 vN = {0., 0., 0.};
+                for (Face f : v.adjacentFaces()) {
+                    // polygon vector area
+                    Vector3 N = {0, 0, 0};
+                    for (Halfedge he : f.adjacentHalfedges()) {
+                        Vertex vA = he.vertex();
+                        Vertex vB = he.next().vertex();
+                        Vector3 pA = geometry->vertexPositions[vA];
+                        Vector3 pB = geometry->vertexPositions[vB];
+                        N += cross(pA, pB);
+                    }
+                    N *= 0.5;
+                    vN += N;
+                    totalArea += N.norm();
+                }
+                vN /= totalArea;
+                vertexNormals[v] = vN;
+            }
+        }
+
+        VBASISX.resize(mesh->nVertices());
+        VBASISY.resize(mesh->nVertices());
+        geometry->requireVertexIndices();
+        for (Vertex v : mesh->vertices()) {
+            size_t vIdx = geometry->vertexIndices[v];
+            Vector3 xVec = geometry->halfedgeVector(v.halfedge());
+            xVec /= xVec.norm();
+            VBASISX[vIdx] = xVec;
+            VBASISY[vIdx] = cross(vertexNormals[v], xVec);
+        }
+        geometry->requireVertexIndices();
+
+        signedHeatSolver = std::unique_ptr<SignedHeatPolygon>(new SignedHeatPolygon(*geometry));
+    }
+
+    // Load source geometry.
+    if (inputFilename) {
+        std::string filename = args::get(inputFilename);
+        CURVES = readCurves(filename);
+        displayInput(CURVES);
     }
 
     polyscope::show();
