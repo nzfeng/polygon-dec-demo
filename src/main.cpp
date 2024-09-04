@@ -698,9 +698,8 @@ int main(int argc, char** argv) {
     // Load mesh
     if (meshFilename) {
         std::string MESH_FILEPATH = args::get(meshFilename);
-        std::string MESHNAME = polyscope::guessNiceNameFromPath(MESH_FILEPATH);
         std::tie(mesh, geometry) = readSurfaceMesh(MESH_FILEPATH);
-        psMesh = polyscope::registerSurfaceMesh(MESHNAME, geometry->vertexPositions, mesh->getFaceVertexList());
+        psMesh = polyscope::registerSurfaceMesh("mesh", geometry->vertexPositions, mesh->getFaceVertexList());
         // psMesh->setAllPermutations(polyscopePermutations(*mesh)); // not valid for polygon meshes
 
         MAX_DIAGONAL_LENGTH = 0.; // maximum length over all polygon diagonals

@@ -46,7 +46,14 @@ VertexData<double> SignedHeatPolygon::computeDistance(const std::vector<std::vec
     geom.unrequireVertexNormals();
 
     ensureHaveVectorHeatSolver();
-    Vector<std::complex<double>> Xt = vectorHeatSolver->solve(X0);
+    // Vector<std::complex<double>> Xt = vectorHeatSolver->solve(X0);
+    geom.requirePolygonVertexConnectionLaplacian();
+    geom.requirePolygonVertexLumpedMassMatrix();
+    SparseMatrix<std::complex<double>>& Lconn = geom.polygonVertexConnectionLaplacian;
+    SparseMatrix<double>& massMat = geom.polygonVertexLumpedMassMatrix;
+    SparseMatrix<std::complex<double>> vectorOp = massMat.cast<std::complex<double>>() + shortTime * Lconn;
+    Vector<std::complex<double>> Xt = solvePositiveDefinite(vectorOp, X0);
+    std::cerr << (vectorOp * Xt - X0).norm() << std::endl;
     // TODO: normals preservation
 
     // Average onto faces, and normalize.
@@ -77,9 +84,9 @@ VertexData<double> SignedHeatPolygon::computeDistance(const std::vector<std::vec
         vBasisX[v] = geom.vertexTangentBasis[v][0];
         vBasisY[v] = geom.vertexTangentBasis[v][1];
     }
-    polyscope::getSurfaceMesh("polygon-bear")->addVertexTangentVectorQuantity("Xt", Xt, vBasisX, vBasisY);
-    polyscope::getSurfaceMesh("polygon-bear")->addVertexTangentVectorQuantity("X0", X0, vBasisX, vBasisY);
-    polyscope::getSurfaceMesh("polygon-bear")->addFaceVectorQuantity("Y", X); // TODO: remove
+    polyscope::getSurfaceMesh("mesh")->addVertexTangentVectorQuantity("Xt", Xt, vBasisX, vBasisY);
+    polyscope::getSurfaceMesh("mesh")->addVertexTangentVectorQuantity("X0", X0, vBasisX, vBasisY);
+    polyscope::getSurfaceMesh("mesh")->addFaceVectorQuantity("Y", X); // TODO: remove
 
     geom.requirePolygonDivergenceMatrix();
     Vector<double> divYt = geom.polygonDivergenceMatrix * Y;
