@@ -53,7 +53,7 @@ VertexData<double> SignedHeatPolygon::computeDistance(const std::vector<std::vec
     SparseMatrix<double>& massMat = geom.polygonVertexLumpedMassMatrix;
     SparseMatrix<std::complex<double>> vectorOp = massMat.cast<std::complex<double>>() + shortTime * Lconn;
     Vector<std::complex<double>> Xt = solvePositiveDefinite(vectorOp, X0);
-    std::cerr << (vectorOp * Xt - X0).norm() << std::endl;
+    std::cerr << (vectorOp * Xt - X0).norm() << " " << X0.norm() << std::endl;
     // TODO: normals preservation
 
     // Average onto faces, and normalize.
@@ -106,6 +106,7 @@ VertexData<double> SignedHeatPolygon::computeDistance(const std::vector<std::vec
     decomposeVector(decomp, divYt, rhsValsA, rhsValsB);
     Vector<double> combinedRHS = rhsValsA;
     Vector<double> Aresult = solvePositiveDefinite(decomp.AA, combinedRHS);
+    std::cerr << (decomp.AA * Aresult - combinedRHS).norm() << std::endl;
     phi = reassembleVector(decomp, Aresult, bcVals);
 
     geom.unrequireVertexIndices();
