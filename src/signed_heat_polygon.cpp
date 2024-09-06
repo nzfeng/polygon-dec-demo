@@ -19,7 +19,7 @@ SignedHeatPolygon::SignedHeatPolygon(EmbeddedGeometryInterface& geom_, double tC
             }
         }
     }
-    shortTime = tCoef * maxDiagonalLength;
+    shortTime = tCoef * maxDiagonalLength * maxDiagonalLength;
 
     // geom.requireEdgeLengths();
     // double meanEdgeLength = 0.;
@@ -44,16 +44,10 @@ VertexData<double> SignedHeatPolygon::computeDistance(const std::vector<std::vec
     geom.requireVertexNormals();
     for (const auto& curve : curves) buildSignedCurveSource(curve, X0);
     geom.unrequireVertexNormals();
+    if (X0.norm() == 0) throw std::logic_error("Input curves must be nonempty to run Signed Heat Method.");
 
     ensureHaveVectorHeatSolver();
-    // Vector<std::complex<double>> Xt = vectorHeatSolver->solve(X0);
-    geom.requirePolygonVertexConnectionLaplacian();
-    geom.requirePolygonVertexLumpedMassMatrix();
-    SparseMatrix<std::complex<double>>& Lconn = geom.polygonVertexConnectionLaplacian;
-    SparseMatrix<double>& massMat = geom.polygonVertexLumpedMassMatrix;
-    SparseMatrix<std::complex<double>> vectorOp = massMat.cast<std::complex<double>>() + shortTime * Lconn;
-    Vector<std::complex<double>> Xt = solvePositiveDefinite(vectorOp, X0);
-    std::cerr << (vectorOp * Xt - X0).norm() << " " << X0.norm() << std::endl;
+    Vector<std::complex<double>> Xt = vectorHeatSolver->solve(X0);
     // TODO: normals preservation
 
     // Average onto faces, and normalize.

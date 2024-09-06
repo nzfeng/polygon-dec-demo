@@ -522,7 +522,7 @@ void solveVectorHeatMethod() {
         vec /= vec.norm();
         sourceVectors[i] = std::make_tuple(v, vec);
         sourcePositions[i] = geometry->vertexPositions[idx];
-        vectorSources[v] = vec[0] * VBASISX[idx] + vec[1] * VBASISX[idx];
+        vectorSources[v] = vec[0] * VBASISX[idx] + vec[1] * VBASISY[idx];
     }
 
     // Plot sources.
@@ -700,7 +700,8 @@ int main(int argc, char** argv) {
         std::string MESH_FILEPATH = args::get(meshFilename);
         std::tie(mesh, geometry) = readSurfaceMesh(MESH_FILEPATH);
         psMesh = polyscope::registerSurfaceMesh("mesh", geometry->vertexPositions, mesh->getFaceVertexList());
-        // psMesh->setAllPermutations(polyscopePermutations(*mesh)); // not valid for polygon meshes
+        if (mesh->isTriangular()) psMesh->setAllPermutations(polyscopePermutations(*mesh));
+        std::cerr << "Mesh is manifold: " << mesh->isManifold() << "\toriented: " << mesh->isOriented() << std::endl;
 
         MAX_DIAGONAL_LENGTH = 0.; // maximum length over all polygon diagonals
         MEAN_EDGE_LENGTH = 0.;
@@ -726,45 +727,25 @@ int main(int argc, char** argv) {
         MEAN_EDGE_LENGTH /= mesh->nEdges();
         geometry->unrequireEdgeLengths();
 
-        VertexData<Vector3> vertexNormals(*mesh);
-        if (mesh->isTriangular()) {
-            geometry->requireVertexNormals();
-            vertexNormals = geometry->vertexNormals;
-            geometry->unrequireVertexNormals();
-        } else {
-            for (Vertex v : mesh->vertices()) {
-                double totalArea = 0.;
-                Vector3 vN = {0., 0., 0.};
-                for (Face f : v.adjacentFaces()) {
-                    // polygon vector area
-                    Vector3 N = {0, 0, 0};
-                    for (Halfedge he : f.adjacentHalfedges()) {
-                        Vertex vA = he.vertex();
-                        Vertex vB = he.next().vertex();
-                        Vector3 pA = geometry->vertexPositions[vA];
-                        Vector3 pB = geometry->vertexPositions[vB];
-                        N += cross(pA, pB);
-                    }
-                    N *= 0.5;
-                    vN += N;
-                    totalArea += N.norm();
-                }
-                vN /= totalArea;
-                vertexNormals[v] = vN;
-            }
-        }
+        geometry->requireVertexNormals();
+        VertexData<Vector3> vertexNormals = geometry->vertexNormals;
+        geometry->unrequireVertexNormals();
 
         VBASISX.resize(mesh->nVertices());
         VBASISY.resize(mesh->nVertices());
         geometry->requireVertexIndices();
+        geometry->requireVertexTangentBasis();
         for (Vertex v : mesh->vertices()) {
             size_t vIdx = geometry->vertexIndices[v];
-            Vector3 xVec = geometry->halfedgeVector(v.halfedge());
-            xVec /= xVec.norm();
-            VBASISX[vIdx] = xVec;
-            VBASISY[vIdx] = cross(vertexNormals[v], xVec);
+            // Vector3 xVec = geometry->halfedgeVector(v.halfedge());
+            // xVec /= xVec.norm();
+            // VBASISX[vIdx] = xVec;
+            // VBASISY[vIdx] = cross(vertexNormals[v], xVec);
+            VBASISX[vIdx] = geometry->vertexTangentBasis[v][0];
+            VBASISY[vIdx] = geometry->vertexTangentBasis[v][1];
         }
         geometry->requireVertexIndices();
+        geometry->unrequireVertexTangentBasis();
 
         signedHeatSolver = std::unique_ptr<SignedHeatPolygon>(new SignedHeatPolygon(*geometry));
     }
