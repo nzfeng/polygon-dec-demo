@@ -19,23 +19,15 @@ SignedHeatPolygon::SignedHeatPolygon(EmbeddedGeometryInterface& geom_, double tC
             }
         }
     }
-    shortTime = tCoef * maxDiagonalLength * maxDiagonalLength;
-
-    // geom.requireEdgeLengths();
-    // double meanEdgeLength = 0.;
-    // for (Edge e : mesh.edges()) {
-    //     meanEdgeLength += geom.edgeLengths[e];
-    // }
-    // meanEdgeLength /= mesh.nEdges();
-    // geom.unrequireEdgeLengths();
-    // shortTime = tCoef * meanEdgeLength * meanEdgeLength;
+    shortTime = tCoef * maxDiagonalLength;
 
     geom.requirePolygonLaplacian();
     laplaceMat = geom.polygonLaplacian;
     geom.unrequirePolygonLaplacian();
 }
 
-VertexData<double> SignedHeatPolygon::computeDistance(const std::vector<std::vector<Vertex>>& curves) {
+VertexData<double> SignedHeatPolygon::computeDistance(const std::vector<std::vector<Vertex>>& curves,
+                                                      const SignedHeatOptions& options) {
 
     size_t V = mesh.nVertices();
     Vector<std::complex<double>> X0 = Vector<std::complex<double>>::Zero(V);
@@ -46,14 +38,13 @@ VertexData<double> SignedHeatPolygon::computeDistance(const std::vector<std::vec
     geom.unrequireVertexNormals();
     if (X0.norm() == 0) throw std::logic_error("Input curves must be nonempty to run Signed Heat Method.");
 
+    Vector<std::complex<double>> Xt(V);
     ensureHaveVectorHeatSolver();
-    Vector<std::complex<double>> Xt = vectorHeatSolver->solve(X0);
-    // TODO: normals preservation
+    Xt = vectorHeatSolver->solve(X0);
 
     // Average onto faces, and normalize.
     size_t F = mesh.nFaces();
     Vector<double> Y(3 * F);
-    Eigen::MatrixXd X(F, 3); // TODO: remove
     geom.requireFaceIndices();
     for (Face f : mesh.faces()) {
         Vector3 Yf = {0, 0, 0};
@@ -66,46 +57,39 @@ VertexData<double> SignedHeatPolygon::computeDistance(const std::vector<std::vec
         size_t fIdx = geom.faceIndices[f];
         for (int j = 0; j < 3; j++) {
             Y[3 * fIdx + j] = Yf[j];
-            X(fIdx, j) = Yf[j]; // TODO: remove
         }
     }
     geom.unrequireFaceIndices();
     geom.unrequireVertexTangentBasis();
-
-    VertexData<Vector3> vBasisX(mesh);
-    VertexData<Vector3> vBasisY(mesh);
-    for (Vertex v : mesh.vertices()) {
-        vBasisX[v] = geom.vertexTangentBasis[v][0];
-        vBasisY[v] = geom.vertexTangentBasis[v][1];
-    }
-    polyscope::getSurfaceMesh("mesh")->addVertexTangentVectorQuantity("Xt", Xt, vBasisX, vBasisY);
-    polyscope::getSurfaceMesh("mesh")->addVertexTangentVectorQuantity("X0", X0, vBasisX, vBasisY);
-    polyscope::getSurfaceMesh("mesh")->addFaceVectorQuantity("Y", X); // TODO: remove
 
     geom.requirePolygonDivergenceMatrix();
     Vector<double> divYt = geom.polygonDivergenceMatrix * Y;
     geom.unrequirePolygonDivergenceMatrix();
 
     Vector<double> phi;
-    Vector<bool> setAMembership = Vector<bool>::Ones(V);
-    for (const auto& curve : curves) {
-        for (const Vertex& v : curve) {
-            setAMembership[geom.vertexIndices[v]] = false;
+    if (options.levelSetConstraint == LevelSetConstraint::None) {
+        ensureHavePoissonSolver();
+        phi = poissonSolver->solve(divYt);
+    } else if (options.levelSetConstraint == LevelSetConstraint::ZeroSet) {
+        Vector<bool> setAMembership = Vector<bool>::Ones(V);
+        for (const auto& curve : curves) {
+            for (const Vertex& v : curve) {
+                setAMembership[geom.vertexIndices[v]] = false;
+            }
         }
+        int nB = V - setAMembership.cast<int>().sum();
+        Vector<double> bcVals = Vector<double>::Zero(nB);
+        BlockDecompositionResult<double> decomp = blockDecomposeSquare(laplaceMat, setAMembership, true);
+        Vector<double> rhsValsA, rhsValsB;
+        decomposeVector(decomp, divYt, rhsValsA, rhsValsB);
+        Vector<double> combinedRHS = rhsValsA;
+        Vector<double> Aresult = solvePositiveDefinite(decomp.AA, combinedRHS);
+        phi = reassembleVector(decomp, Aresult, bcVals);
+    } else if (options.levelSetConstraint == LevelSetConstraint::Multiple) {
+        // TODO
     }
-    int nB = V - setAMembership.cast<int>().sum();
-    Vector<double> bcVals = Vector<double>::Zero(nB);
-    BlockDecompositionResult<double> decomp = blockDecomposeSquare(laplaceMat, setAMembership, true);
-    Vector<double> rhsValsA, rhsValsB;
-    decomposeVector(decomp, divYt, rhsValsA, rhsValsB);
-    Vector<double> combinedRHS = rhsValsA;
-    Vector<double> Aresult = solvePositiveDefinite(decomp.AA, combinedRHS);
-    std::cerr << (decomp.AA * Aresult - combinedRHS).norm() << std::endl;
-    phi = reassembleVector(decomp, Aresult, bcVals);
 
     geom.unrequireVertexIndices();
-
-    // TODO: level set constraints
 
     return VertexData<double>(mesh, phi);
 }

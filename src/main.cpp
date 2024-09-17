@@ -2,6 +2,7 @@
 #include "geometrycentral/surface/heat_method_distance.h"
 #include "geometrycentral/surface/manifold_surface_mesh.h"
 #include "geometrycentral/surface/meshio.h"
+#include "geometrycentral/surface/polygon_mesh_heat_solver.h"
 #include "geometrycentral/surface/surface_mesh_factories.h"
 #include "geometrycentral/surface/vector_heat_method.h"
 #include "geometrycentral/surface/vertex_position_geometry.h"
@@ -31,13 +32,14 @@ std::unique_ptr<VertexPositionGeometry> geometry;
 
 // == Polyscope data
 polyscope::SurfaceMesh* psMesh;
-std::vector<Vector3> VBASISX, VBASISY;
 
 // == other data
 double MAX_DIAGONAL_LENGTH = 0.;
 double MEAN_EDGE_LENGTH = 0.;
 std::vector<std::vector<Vertex>> CURVES;
 std::unique_ptr<SignedHeatPolygon> signedHeatSolver;
+std::unique_ptr<PolygonMeshHeatSolver> polyHeatSolver;
+int CONSTRAINT_MODE = static_cast<int>(LevelSetConstraint::ZeroSet);
 
 std::vector<std::vector<Vertex>> readCurves(const std::string& filename) {
 
@@ -418,94 +420,143 @@ void solvePoissonProblems() {
     std::cerr << "\tDone testing." << std::endl;
 }
 
-/* Implement the scalar heat method -- good way to test the gradient, divergence, and Laplacian. */
-void solveGeodesicDistance() {
-    std::cerr << "solveGeodesicDistance()..." << std::endl;
-    // Randomly choose some vertex sources.
-    size_t V = mesh->nVertices();
-    size_t F = mesh->nFaces();
-    Vector<double> rho = Vector<double>::Zero(V);
-    const int nSources = randomInt(1, 5);
-    std::vector<Vector3> sourcePositions(nSources);
-    std::vector<Vertex> sources(nSources);
-    for (int i = 0; i < nSources; i++) {
-        size_t idx = randomIndex(V);
-        sourcePositions[i] = geometry->vertexPositions[idx];
-        sources[i] = mesh->vertex(idx);
-        rho[idx] += 1.;
-    }
+/* Implement scalar heat method using operators from de Goes et al. */
+VertexData<double> scalarHeatMethod(const std::vector<Vertex>& sourceVerts) {
 
-    // Plot sources.
-    polyscope::registerPointCloud("geodesic sources", sourcePositions);
-
-    geometry->requireVertexIndices();
     geometry->requirePolygonVertexLumpedMassMatrix();
     geometry->requirePolygonLaplacian();
     geometry->requirePolygonGradientMatrix();
     geometry->requirePolygonDivergenceMatrix();
-    geometry->requirePolygonDECOperators();
+    geometry->requireVertexIndices();
 
     // Flow heat.
+    size_t V = mesh->nVertices();
+    size_t F = mesh->nFaces();
+    Vector<double> rho = Vector<double>::Zero(V);
+    for (Vertex v : sourceVerts) {
+        size_t vIdx = geometry->vertexIndices[v];
+        rho[vIdx] += 1;
+    }
+
     SparseMatrix<double> M = geometry->polygonVertexLumpedMassMatrix;
     SparseMatrix<double> L = geometry->polygonLaplacian;
-    double shortTime = MAX_DIAGONAL_LENGTH * MAX_DIAGONAL_LENGTH;
+    // double shortTime = MAX_DIAGONAL_LENGTH * MAX_DIAGONAL_LENGTH;
+    double shortTime = MEAN_EDGE_LENGTH * MEAN_EDGE_LENGTH;
     SparseMatrix<double> LHS = M + shortTime * L;
     Vector<double> X = solvePositiveDefinite(LHS, rho);
+    psMesh->addVertexScalarQuantity("Xt", X);
 
     // Normalize gradient.
     Vector<double> Y = geometry->polygonGradientMatrix * X; // 3|F|
+    FaceData<Vector3> Yt(*mesh);
     for (size_t i = 0; i < F; i++) {
         Vector3 g = {Y[3 * i], Y[3 * i + 1], Y[3 * i + 2]};
         g /= g.norm();
         Y[3 * i] = g[0];
         Y[3 * i + 1] = g[1];
         Y[3 * i + 2] = g[2];
+        Yt[i] = g;
     }
+    psMesh->addFaceVectorQuantity("Yt", Yt);
 
     // Integrate.
-    Vector<double> div = geometry->polygonDivergenceMatrix * Y;
-    shiftDiagonal(L, 1e-8);
-    Vector<double> VEMDistances = solvePositiveDefinite(L, div);
-    VEMDistances *= -1.; // since div * grad gives positive Laplacian
+    Vector<double> div = -geometry->polygonDivergenceMatrix * Y;
+    Vector<double> distances = solvePositiveDefinite(L, div);
+    // std::cerr << (geometry->polygonDivergenceMatrix * geometry->polygonGradientMatrix - L).norm() << std::endl;
 
     // Shift solution.
-    double avgVEM = 0.;
-    for (const Vertex& v : sources) {
-        size_t vIdx = geometry->vertexIndices[v];
-        avgVEM += VEMDistances[vIdx];
-    }
-    avgVEM /= nSources;
-    VEMDistances -= avgVEM * Vector<double>::Ones(V);
+    distances -= distances.minCoeff() * Vector<double>::Ones(V);
 
-    geometry->unrequireVertexIndices();
+    geometry->unrequirePolygonVertexLumpedMassMatrix();
     geometry->unrequirePolygonLaplacian();
     geometry->unrequirePolygonGradientMatrix();
     geometry->unrequirePolygonDivergenceMatrix();
-    geometry->unrequirePolygonVertexLumpedMassMatrix();
-    geometry->unrequirePolygonDECOperators();
+    geometry->unrequireVertexIndices();
 
-    psMesh->addVertexSignedDistanceQuantity("VEM", VEMDistances);
+    return VertexData<double>(*mesh, distances);
+}
+
+void testExactGeodesicDistance() {
+
+    size_t V = mesh->nVertices();
+    const int nSources = randomInt(1, 5);
+    std::vector<Vertex> sources(nSources);
+    std::vector<Vector3> sourcePositions(nSources);
+    for (int i = 0; i < nSources; i++) {
+        size_t idx = randomIndex(V);
+        sourcePositions[i] = geometry->vertexPositions[idx];
+        sources[i] = mesh->vertex(idx);
+    }
+    polyscope::registerPointCloud("geodesic sources", sourcePositions);
+    GeodesicAlgorithmExact mmp(*mesh, *geometry);
+    mmp.propagate(sources);
+    VertexData<double> mmpDistances = mmp.getDistanceFunction();
+    psMesh->addVertexSignedDistanceQuantity("mmpDistances", mmpDistances)->setEnabled(true);
+}
+
+/* Implement the scalar heat method -- good way to test the gradient, divergence, and Laplacian. */
+void testScalarHeatMethod() {
+
+    std::cerr << "testScalarHeatMethod()..." << std::endl;
+
+    // Randomly choose some vertex sources.
+    size_t V = mesh->nVertices();
+    size_t F = mesh->nFaces();
+    const int nSources = randomInt(1, 5);
+    // const int nSources = 3;
+    // std::vector<size_t> sourceIndices = {0, 499, 999};
+    std::vector<Vector3> sourcePositions(nSources);
+    std::vector<Vertex> sources(nSources);
+    for (int i = 0; i < nSources; i++) {
+        size_t idx = randomIndex(V);
+        // size_t idx = sourceIndices[i];
+        sourcePositions[i] = geometry->vertexPositions[idx];
+        sources[i] = mesh->vertex(idx);
+    }
+
+    // Plot sources.
+    polyscope::registerPointCloud("geodesic sources", sourcePositions);
+
+    VertexData<double> VEMDistances = polyHeatSolver->computeDistance(sources);
+    psMesh->addVertexSignedDistanceQuantity("VEMDistances", VEMDistances);
 
     if (mesh->isTriangular()) {
         // Solve using standard operators.
         HeatMethodDistanceSolver triSolver(*geometry);
         VertexData<double> hmDistances = triSolver.computeDistance(sources);
+        psMesh->addVertexSignedDistanceQuantity("hmDistances", hmDistances);
 
         GeodesicAlgorithmExact mmp(*mesh, *geometry);
         mmp.propagate(sources);
         VertexData<double> mmpDistances = mmp.getDistanceFunction();
+        psMesh->addVertexSignedDistanceQuantity("mmpDistances", mmpDistances);
 
-        psMesh->addVertexSignedDistanceQuantity("heat method", hmDistances);
-        std::cerr << "\t[distance] |VEM - truth|: " << (mmpDistances.toVector() - VEMDistances).norm() << "\t"
-                  << (mmpDistances.toVector() - VEMDistances).norm() / mmpDistances.toVector().norm() << std::endl;
-        std::cerr << "\t[distance] |heat method - truth|: " << (mmpDistances.toVector() - hmDistances.toVector()).norm()
-                  << "\t" << (mmpDistances.toVector() - hmDistances.toVector()).norm() / mmpDistances.toVector().norm()
+        std::cerr << "\t[distance] |VEM - MMP|: " << (mmpDistances.toVector() - VEMDistances.toVector()).norm() << "\t"
+                  << (mmpDistances.toVector() - VEMDistances.toVector()).norm() / mmpDistances.toVector().norm()
                   << std::endl;
+        std::cerr << "\t[distance] |VEM - SHM|: " << (hmDistances.toVector() - VEMDistances.toVector()).norm() << "\t"
+                  << (hmDistances.toVector() - VEMDistances.toVector()).norm() / hmDistances.toVector().norm()
+                  << std::endl;
+
+        // std::cerr << "\t[distance] |VR - MMP|: " << (mmpDistances.toVector() - VRDistances.toVector()).norm() << "\t"
+        //           << (mmpDistances.toVector() - VRDistances.toVector()).norm() / mmpDistances.toVector().norm()
+        //           << std::endl;
+        // std::cerr << "\t[distance] |VR - SHM|: " << (hmDistances.toVector() - VRDistances.toVector()).norm() << "\t"
+        //           << (hmDistances.toVector() - VRDistances.toVector()).norm() / hmDistances.toVector().norm()
+        //           << std::endl;
     }
     std::cerr << "\tDone testing." << std::endl;
 }
 
-void solveVectorHeatMethod() {
+void testVectorHeatMethod() {
+
+    geometry->requireVertexTangentBasis();
+    VertexData<Vector3> vBasisX(*mesh);
+    VertexData<Vector3> vBasisY(*mesh);
+    for (Vertex v : mesh->vertices()) {
+        vBasisX[v] = geometry->vertexTangentBasis[v][0];
+        vBasisY[v] = geometry->vertexTangentBasis[v][1];
+    }
 
     // Randomly choose some vertex sources with random magnitudes.
     size_t V = mesh->nVertices();
@@ -520,66 +571,26 @@ void solveVectorHeatMethod() {
         sourceMagnitudes[i] = std::make_tuple(v, randomReal(1., 5.));
         Vector2 vec = {randomReal(-1., 1.), randomReal(-1., 1.)};
         vec /= vec.norm();
+        vec *= std::get<1>(sourceMagnitudes[i]);
         sourceVectors[i] = std::make_tuple(v, vec);
         sourcePositions[i] = geometry->vertexPositions[idx];
-        vectorSources[v] = vec[0] * VBASISX[idx] + vec[1] * VBASISY[idx];
+        vectorSources[v] = vec[0] * vBasisX[v] + vec[1] * vBasisY[v];
     }
 
     // Plot sources.
     polyscope::registerPointCloud("source locations", sourcePositions);
 
-    geometry->requireVertexIndices();
-    geometry->requirePolygonLaplacian();
-    geometry->requirePolygonVertexConnectionLaplacian();
-    geometry->requirePolygonVertexLumpedMassMatrix();
-
-    // Encode initial data
-    Vector<double> rho_magnitudes = Vector<double>::Zero(V);
-    Vector<double> rho = Vector<double>::Zero(V);
-    Vector<std::complex<double>> rho_vectors = Vector<std::complex<double>>::Zero(V);
-    for (int i = 0; i < nSources; i++) {
-        size_t vIdx = geometry->vertexIndices[std::get<0>(sourceMagnitudes[i])];
-        rho[vIdx] += 1.0;
-        rho_magnitudes[vIdx] += std::get<1>(sourceMagnitudes[i]);
-        rho_vectors[vIdx] += std::complex<double>(std::get<1>(sourceVectors[i]));
-    }
-
-    // Scalar extension
-    double shortTime = MAX_DIAGONAL_LENGTH * MAX_DIAGONAL_LENGTH;
-    SparseMatrix<double> M = geometry->polygonVertexLumpedMassMatrix;
-    SparseMatrix<double> L = geometry->polygonLaplacian;
-    SparseMatrix<double> heatOp = M + shortTime * L;
-    PositiveDefiniteSolver<double> heatSolver(heatOp);
-    Vector<double> ones = heatSolver.solve(rho);
-    Vector<double> scalarExtension = heatSolver.solve(rho_magnitudes);
-    for (size_t i = 0; i < V; i++) {
-        scalarExtension[i] /= ones[i];
-    }
-
-    // Vector extension
-    SparseMatrix<std::complex<double>> CL = geometry->polygonVertexConnectionLaplacian;
-    SparseMatrix<std::complex<double>> M_CL = M.cast<std::complex<double>>();
-    SparseMatrix<std::complex<double>> vectorHeatOp = M_CL + shortTime * CL;
-    Vector<std::complex<double>> vectorSoln = solvePositiveDefinite(vectorHeatOp, rho_vectors);
-    VertexData<Vector2> vectorExtension(*mesh);
-    for (Vertex v : mesh->vertices()) {
-        size_t vIdx = geometry->vertexIndices[v];
-        Vector2 vec = Vector2::fromComplex(vectorSoln[vIdx]);
-        vectorExtension[v] = vec / vec.norm();
-    }
-
-    VertexData<Vector2> polySoln(*mesh);
-    for (size_t i = 0; i < V; i++) {
-        polySoln[i] = scalarExtension[i] * vectorExtension[i];
-    }
-
     // Visualize solution.
-    VertexData<Vector3> polySolnR3(*mesh);
-    for (size_t i = 0; i < V; i++) {
-        polySolnR3[i] = polySoln[i][0] * VBASISX[i] + polySoln[i][1] * VBASISY[i];
-    }
+    VertexData<Vector2> transportedVecs = polyHeatSolver->transportTangentVectors(sourceVectors);
+    VertexData<double> extendedScalars = polyHeatSolver->extendScalars(sourceMagnitudes);
     psMesh->addVertexVectorQuantity("vector sources", vectorSources);
-    psMesh->addVertexVectorQuantity("VHM", polySolnR3);
+    psMesh->addVertexTangentVectorQuantity("VHM", transportedVecs, vBasisX, vBasisY);
+    psMesh->addVertexScalarQuantity("extended scalars", extendedScalars);
+
+    VertexData<Vector3> transportedVecsR3(*mesh);
+    for (Vertex v : mesh->vertices()) {
+        transportedVecsR3[v] = transportedVecs[v][0] * vBasisX[v] + transportedVecs[v][1] * vBasisY[v];
+    }
 
     if (mesh->isTriangular()) {
         // Solve using standard operators.
@@ -588,11 +599,8 @@ void solveVectorHeatMethod() {
         manifoldMesh = mesh->toManifoldMesh();
         manifoldGeom = geometry->reinterpretTo(*manifoldMesh);
 
+        manifoldGeom->requireVertexTangentBasis();
         manifoldGeom->requireVertexConnectionLaplacian();
-        // std::cerr << geometry->polygonVertexConnectionLaplacian << std::endl;
-        // std::cerr << manifoldGeom->vertexConnectionLaplacian << std::endl;
-        // std::cerr << geometry->polygonVertexConnectionLaplacian - manifoldGeom->vertexConnectionLaplacian <<
-        // std::endl;
         std::cerr << (geometry->polygonVertexConnectionLaplacian - manifoldGeom->vertexConnectionLaplacian).norm()
                   << "\t"
                   << (geometry->polygonVertexConnectionLaplacian - manifoldGeom->vertexConnectionLaplacian).norm() /
@@ -600,45 +608,44 @@ void solveVectorHeatMethod() {
                   << std::endl;
         manifoldGeom->unrequireVertexConnectionLaplacian();
 
-
         double tCoef = (MAX_DIAGONAL_LENGTH * MAX_DIAGONAL_LENGTH) / (MEAN_EDGE_LENGTH * MEAN_EDGE_LENGTH);
         VectorHeatMethodSolver triSolver(*manifoldGeom, tCoef);
         // re-interpret sources on manifold mesh
+        VertexData<Vector3> basisX(*mesh);
+        VertexData<Vector3> basisY(*mesh);
+        for (Vertex v : manifoldMesh->vertices()) {
+            basisX[v] = manifoldGeom->vertexTangentBasis[v][0];
+            basisY[v] = manifoldGeom->vertexTangentBasis[v][1];
+        }
         std::vector<std::tuple<Vertex, double>> sourceMagnitudesManifold(nSources);
         std::vector<std::tuple<Vertex, Vector2>> sourceVectorsManifold(nSources);
         for (int i = 0; i < nSources; i++) {
             size_t vIdx = geometry->vertexIndices[std::get<0>(sourceMagnitudes[i])];
             Vertex manifoldVertex = manifoldMesh->vertex(vIdx);
             sourceMagnitudesManifold[i] = std::make_tuple(manifoldVertex, std::get<1>(sourceMagnitudes[i]));
-            sourceVectorsManifold[i] = std::make_tuple(manifoldVertex, std::get<1>(sourceVectors[i]));
+            Vector2 vec = std::get<1>(sourceVectors[i]);
+            Vector3 vec3 = vec[0] * vBasisX[vIdx] + vec[1] * vBasisY[vIdx];
+            Vector2 vecManifold = {dot(vec3, basisX[vIdx]), dot(vec3, basisY[vIdx])};
+            sourceVectorsManifold[i] = std::make_tuple(manifoldVertex, vecManifold);
         }
         VertexData<double> triScalarExtension = triSolver.extendScalar(sourceMagnitudesManifold);
         VertexData<Vector2> triVectorExtension = triSolver.transportTangentVectors(sourceVectorsManifold);
-        VertexData<Vector2> triSoln(*manifoldMesh);
-        for (Vertex v : manifoldMesh->vertices()) triSoln[v] = triVectorExtension[v] * triScalarExtension[v];
 
-        psMesh->addVertexTangentVectorQuantity("VHM (tri)", triSoln, VBASISX, VBASISY);
-        psMesh->addVertexTangentVectorQuantity("VHM (poly)", polySoln, VBASISX, VBASISY);
+        psMesh->addVertexTangentVectorQuantity("VHM (tri)", triVectorExtension, basisX, basisY);
         psMesh->addVertexScalarQuantity("scalar ext. (tri)", triScalarExtension);
-        psMesh->addVertexScalarQuantity("scalar ext. (poly)", scalarExtension);
-        std::cerr << "|scalars - truth|: " << (triScalarExtension.toVector() - scalarExtension).norm() << "\t"
-                  << (triScalarExtension.toVector() - scalarExtension).norm() / triScalarExtension.toVector().norm()
+        std::cerr << "|scalars - truth|: " << (triScalarExtension.toVector() - extendedScalars.toVector()).norm()
+                  << "\t"
+                  << (triScalarExtension.toVector() - extendedScalars.toVector()).norm() /
+                         triScalarExtension.toVector().norm()
                   << std::endl;
-        double vectorResidual = 0.;
-        double solnResidual = 0.;
-        for (Vertex v : mesh->vertices()) {
-            size_t vIdx = geometry->vertexIndices[v];
-            vectorResidual += (triVectorExtension[vIdx] - Vector2::fromComplex(vectorExtension[vIdx])).norm();
-            solnResidual += (polySoln[v] - triSoln[vIdx]).norm();
+        double residual = 0.;
+        for (size_t i = 0; i < mesh->nVertices(); i++) {
+            Vector3 soln = transportedVecsR3[i];
+            Vector3 manifoldSoln = triVectorExtension[i][0] * basisX[i] + triVectorExtension[i][1] * basisY[i];
+            residual += (soln - manifoldSoln).norm();
         }
-        std::cerr << "|vectors - truth|: " << vectorResidual << "\t" << vectorResidual / V << std::endl;
-        std::cerr << "|soln - truth|: " << solnResidual << "\t" << solnResidual / V << std::endl;
+        std::cerr << "|soln - truth|: " << residual << "\t" << residual / V << std::endl;
     }
-
-    geometry->unrequireVertexIndices();
-    geometry->unrequirePolygonLaplacian();
-    geometry->unrequirePolygonVertexConnectionLaplacian();
-    geometry->unrequirePolygonVertexLumpedMassMatrix();
 }
 
 void myCallback() {
@@ -660,16 +667,21 @@ void myCallback() {
     if (ImGui::Button("Solve Poisson problems")) {
         solvePoissonProblems();
     }
-    if (ImGui::Button("Solve geodesic distance")) {
-        solveGeodesicDistance();
+    if (ImGui::Button("Solve Scalar Heat Method")) {
+        testScalarHeatMethod();
     }
     if (ImGui::Button("Solve Vector Heat Method")) {
-        solveVectorHeatMethod();
+        testVectorHeatMethod();
     }
     if (ImGui::Button("Solve Signed Heat Method")) {
-        VertexData<double> phi = signedHeatSolver->computeDistance(CURVES);
+        VertexData<double> phi =
+            polyHeatSolver->computeSignedDistance(CURVES, static_cast<LevelSetConstraint>(CONSTRAINT_MODE));
         psMesh->addVertexSignedDistanceQuantity("GSD", phi)->setEnabled(true);
     }
+    ImGui::RadioButton("Constrain zero set", &CONSTRAINT_MODE, static_cast<int>(LevelSetConstraint::ZeroSet));
+    ImGui::RadioButton("Constrain multiple levelsets", &CONSTRAINT_MODE,
+                       static_cast<int>(LevelSetConstraint::Multiple));
+    ImGui::RadioButton("No levelset constraints", &CONSTRAINT_MODE, static_cast<int>(LevelSetConstraint::None));
 }
 
 int main(int argc, char** argv) {
@@ -727,27 +739,8 @@ int main(int argc, char** argv) {
         MEAN_EDGE_LENGTH /= mesh->nEdges();
         geometry->unrequireEdgeLengths();
 
-        geometry->requireVertexNormals();
-        VertexData<Vector3> vertexNormals = geometry->vertexNormals;
-        geometry->unrequireVertexNormals();
-
-        VBASISX.resize(mesh->nVertices());
-        VBASISY.resize(mesh->nVertices());
-        geometry->requireVertexIndices();
-        geometry->requireVertexTangentBasis();
-        for (Vertex v : mesh->vertices()) {
-            size_t vIdx = geometry->vertexIndices[v];
-            // Vector3 xVec = geometry->halfedgeVector(v.halfedge());
-            // xVec /= xVec.norm();
-            // VBASISX[vIdx] = xVec;
-            // VBASISY[vIdx] = cross(vertexNormals[v], xVec);
-            VBASISX[vIdx] = geometry->vertexTangentBasis[v][0];
-            VBASISY[vIdx] = geometry->vertexTangentBasis[v][1];
-        }
-        geometry->requireVertexIndices();
-        geometry->unrequireVertexTangentBasis();
-
         signedHeatSolver = std::unique_ptr<SignedHeatPolygon>(new SignedHeatPolygon(*geometry));
+        polyHeatSolver = std::unique_ptr<PolygonMeshHeatSolver>(new PolygonMeshHeatSolver(*geometry));
     }
 
     // Load source geometry.

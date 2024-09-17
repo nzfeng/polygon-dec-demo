@@ -2,6 +2,7 @@
 
 #include "geometrycentral/numerical/linear_solvers.h"
 #include "geometrycentral/surface/embedded_geometry_interface.h"
+#include "geometrycentral/surface/signed_heat_method.h"
 #include "geometrycentral/surface/surface_mesh.h"
 
 #include "polyscope/curve_network.h"
@@ -21,7 +22,8 @@ class SignedHeatPolygon {
   public:
     SignedHeatPolygon(EmbeddedGeometryInterface& geom, double tCoef = 1.0);
 
-    VertexData<double> computeDistance(const std::vector<std::vector<Vertex>>& curves); // TODO: Add options
+    VertexData<double> computeDistance(const std::vector<std::vector<Vertex>>& curves,
+                                       const SignedHeatOptions& options = SignedHeatOptions());
 
   private:
     SurfaceMesh& mesh;
